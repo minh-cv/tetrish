@@ -13,6 +13,8 @@ target_include_directories(libtetrisbrain PUBLIC include)
 add_library(common src/common/common.c)
 target_include_directories(common PUBLIC include)
 
+add_library(vector src/vector/vector.c)
+
 add_executable(tetrisctl src/tetrisctl/main.c)
 add_executable(tetrisd src/tetrisd/main.c)
 add_executable(tetrislogd src/tetrislogd/main.c)
@@ -27,6 +29,7 @@ install(
         libtetrissh
         libtetrisbrain
         common
+        vector
         tetrisctl
         tetrisd
         tetrislogd
