@@ -1,0 +1,4 @@
+PATH=/path/to/binary/directory:/usr/bin
+
+setenv BACKUP_DIR=tmp
+setenv PROJECT_DIR=/path/to/root/directory

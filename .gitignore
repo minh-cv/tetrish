@@ -11,3 +11,4 @@ tmp/
 .cache/
 .vscode/
 compile_commands.json
+.tetrishrc
