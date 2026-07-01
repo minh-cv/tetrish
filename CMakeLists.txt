@@ -41,6 +41,9 @@ add_executable(find src/tetrish/system_programs/find.c)
 target_include_directories(find PRIVATE include)
 target_link_libraries(find PRIVATE perms)
 
+add_executable(backup src/tetrish/system_programs/backup.c)
+target_include_directories(backup PRIVATE include)
+
 add_executable(sys src/tetrish/system_programs/sys.c)
 target_include_directories(sys PRIVATE include)
 
@@ -57,6 +60,7 @@ install(
         ld
         ldr
         find
+        backup
     RUNTIME DESTINATION bin           # for executables (and DLLs on Windows)
     LIBRARY DESTINATION lib           # for shared libraries on Unix
     ARCHIVE DESTINATION lib           # for static libs (.a, .lib)

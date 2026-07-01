@@ -1,9 +1,39 @@
+#include <errno.h>
 #include <linux/limits.h>
 #include <stdio.h>
 #include <stdlib.h>
+#include <sys/stat.h>
 #include <sys/wait.h>
 #include <time.h>
 #include <unistd.h>
+
+int mkdir_archive(const char* archive_path) {
+    char archive_dir[PATH_MAX];
+    int n = snprintf(archive_dir, PATH_MAX, "%s/archive", archive_path);
+    if (n < 0 || n >= (int)sizeof archive_dir) {
+        fprintf(stderr, "Error: archive dir path too long.\n");
+        return -1;
+    }
+
+    if (mkdir(archive_dir, 0755) == -1) {
+        if (errno == EEXIST) {
+            struct stat st;
+            if (stat(archive_dir, &st) == -1) {
+                perror("stat archive");
+                return -1;
+            }
+            if (!S_ISDIR(st.st_mode)) {
+                fprintf(stderr, "Error: %s exists and is not a directory\n", archive_dir);
+                return -1;
+            }
+        } else {
+            perror("mkdir archive");
+            return -1;
+        }
+    }
+
+    return 0;
+}
 
 int main() {
     const char* BACKUP_DIR = getenv("BACKUP_DIR");
@@ -16,6 +46,11 @@ int main() {
         fprintf(stderr, "Error: PROJECT_DIR not set\n");
         return 1;
     }
+
+    if (mkdir_archive(archive_path) == -1) {
+        return 1;
+    }
+
     time_t t = time(NULL);
     struct tm* tm_info = localtime(&t);
     if (tm_info == NULL) {
@@ -50,7 +85,6 @@ int main() {
     }
     
     int status;
-    wait(&status);
     if (wait(&status) == -1) {
         perror("wait");
         return 1;
