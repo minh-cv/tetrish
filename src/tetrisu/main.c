@@ -2,6 +2,7 @@
 #include <arpa/inet.h>
 #include <assert.h>
 #include <errno.h>
+#include <netdb.h>
 #include <netinet/in.h>
 #include <stdbool.h>
 #include <stdint.h>
@@ -13,8 +14,6 @@
 
 #include <dtor.h>
 
-#define SERVER_PORT 12345
-#define SERVER_IP "127.0.0.1"
 #define MAX_MESSAGE_SIZE 4096
 
 static uint32_t decode_u32_be(const uint8_t buf[4]) {
@@ -148,7 +147,10 @@ int htttp_receive(int fd, htttp_message_t* message) {
     return 0;
 }
 
-int main(void) {
+int main(int argc, char** argv) {
+    int port = (argc > 1) ? atoi(argv[1]) : 4321;
+    const char *server_address = (argc > 2) ? argv[2] : "localhost";
+
     int sockfd = socket(AF_INET, SOCK_STREAM, 0);
     if (sockfd == -1) {
         perror("socket");
@@ -157,13 +159,16 @@ int main(void) {
 
     struct sockaddr_in addr = {0};
     addr.sin_family = AF_INET;
-    addr.sin_port = htons(SERVER_PORT);
+    addr.sin_port = htons((uint16_t)port);
 
-    if (inet_pton(AF_INET, SERVER_IP, &addr.sin_addr) != 1) {
-        perror("inet_pton");
-        close(sockfd);
+    struct hostent *he = gethostbyname(server_address);
+    if (!he)
+    {
+        fprintf(stderr, "Cannot resolve host: %s\n", server_address);
         return 1;
     }
+    memcpy(&addr.sin_addr, he->h_addr_list[0], (size_t)he->h_length);
+
 
     if (connect(sockfd, (struct sockaddr *)&addr, sizeof(addr)) == -1) {
         perror("connect");
@@ -171,7 +176,7 @@ int main(void) {
         return 1;
     }
 
-    printf("connected to %s:%d\n", SERVER_IP, SERVER_PORT);
+    printf("connected to %s:%d\n", server_address, port);
 
     while (true) {
         char line[MAX_MESSAGE_SIZE + 1] = {0};

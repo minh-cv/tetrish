@@ -15,7 +15,6 @@
 #include <sys/socket.h>
 #include <unistd.h>
 
-#define PORT 12345
 #define MAX_EVENTS 64
 #define MAX_CLIENTS 1024
 #define MAX_MESSAGE_SIZE 4096
@@ -273,7 +272,7 @@ static int close_ptr(const int* fd) {
 
 static DTOR_WRAPPER_DEFINE(close_ptr)
 
-int main(void) {
+int main(int argc, char** argv) {
     DTOR_DEFINE(dtor, 20);
     
     struct sigaction sa = {0};
@@ -286,6 +285,9 @@ int main(void) {
         perror("sigaction");
         return 1;
     }
+
+    int port = (argc > 1) ? atoi(argv[1]) : 4321;
+    const char *address = (argc > 2) ? argv[2] : "localhost";
 
     int listen_fd = socket(AF_INET, SOCK_STREAM, 0);
     if (listen_fd == -1) {
@@ -305,10 +307,17 @@ int main(void) {
         DTOR_RETURN(dtor, 1);
     }
 
-    struct sockaddr_in addr = {0};
+    struct sockaddr_in addr;
+    memset(&addr, 0, sizeof(addr));
     addr.sin_family = AF_INET;
-    addr.sin_port = htons(PORT);
-    addr.sin_addr.s_addr = htonl(INADDR_ANY);
+    addr.sin_port = htons((uint16_t)port);
+
+    if (strcmp(address, "localhost") == 0)
+        addr.sin_addr.s_addr = htonl(INADDR_LOOPBACK);
+    else if (strcmp(address, "0.0.0.0") == 0)
+        addr.sin_addr.s_addr = htonl(INADDR_ANY);
+    else
+        inet_pton(AF_INET, address, &addr.sin_addr);
 
     if (bind(listen_fd, (struct sockaddr *)&addr, sizeof(addr)) == -1) {
         perror("bind");
@@ -336,7 +345,7 @@ int main(void) {
         DTOR_RETURN(dtor, 1);
     }
 
-    printf("server listening on port %d\n", PORT);
+    printf("server listening on port %d\n", port);
 
     while (running) {
         struct epoll_event events[MAX_EVENTS];
