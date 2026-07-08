@@ -22,7 +22,7 @@ add_executable(tetrisu src/tetrisu/main.c)
 
 foreach(target tetrisd tetrisu)
     target_include_directories(${target} PRIVATE include)
-    target_link_libraries(${target} PRIVATE libhtttp)
+    target_link_libraries(${target} PRIVATE libhtttp common crypto)
 endforeach()
 
 add_library(perms src/tetrish/libs/perms.c)
