@@ -130,7 +130,7 @@ int tetrish_client_handshake(int sockfd, const char* ca_path, SessionKey* sessio
         }
     
     uint32_t signed_nonce_len;
-    if (recv_uint32_t(sockfd, &signed_nonce_len) == -1 || signed_nonce_len > FRAME_MAX - FRAME_LENGTH) DTOR_RETURN(dtor, -1);
+    if (recv_uint32_t(sockfd, &signed_nonce_len) == -1 || signed_nonce_len > FRAME_MAX) DTOR_RETURN(dtor, -1);
 
     unsigned char* signed_nonce_buf = read_bytes(sockfd, signed_nonce_len);
     if (signed_nonce_buf == NULL) {
@@ -139,7 +139,7 @@ int tetrish_client_handshake(int sockfd, const char* ca_path, SessionKey* sessio
     DTOR_INSERT(dtor, free, signed_nonce_buf);
 
     uint32_t cert_len;
-    if (recv_uint32_t(sockfd, &cert_len) == -1 || cert_len > FRAME_MAX - FRAME_LENGTH) DTOR_RETURN(dtor, -1);
+    if (recv_uint32_t(sockfd, &cert_len) == -1 || cert_len > FRAME_MAX) DTOR_RETURN(dtor, -1);
 
     unsigned char* cert_buf = read_bytes(sockfd, cert_len);
     if (cert_buf == NULL) {
@@ -176,7 +176,7 @@ int tetrish_client_handshake(int sockfd, const char* ca_path, SessionKey* sessio
     size_t encrypted_shared_key_len;
     unsigned char* encrypted_shared_key = rsa_encrypt_block(public_key, *session_key, SESSION_KEY_LEN, &encrypted_shared_key_len, 1);
     DTOR_INSERT(dtor, free, encrypted_shared_key);
-    if (encrypted_shared_key == NULL || encrypted_shared_key_len > FRAME_MAX - FRAME_LENGTH) {
+    if (encrypted_shared_key == NULL || encrypted_shared_key_len > FRAME_MAX) {
         DTOR_RETURN(dtor, -1);
     }
 
@@ -188,32 +188,17 @@ int tetrish_client_handshake(int sockfd, const char* ca_path, SessionKey* sessio
     DTOR_RETURN(dtor, 0);
 }
 
-unsigned char* tetrish_server_make_auth_response(unsigned char* nonce, uint32_t nonce_length, TetrishCredential* info, uint32_t* response_length) {
+unsigned char* tetrish_server_sign_nonce(unsigned char* nonce, uint32_t nonce_length, EVP_PKEY* private_key, uint32_t* response_length) {
     size_t sig_len;
-    unsigned char* signed_nonce = sign_message_pss(info->private_key, nonce, nonce_length, &sig_len);
-    if (signed_nonce == NULL) {
+    unsigned char* signed_nonce = sign_message_pss(private_key, nonce, nonce_length, &sig_len);
+    if (signed_nonce == NULL || sig_len > FRAME_MAX) {
         fprintf(stderr, "Failed to sign nonce\n");
         return NULL;
     }
-    size_t out_len = info->certificate_len + sig_len + 2*sizeof(uint32_t);
-    if (out_len > FRAME_MAX - FRAME_LENGTH) {
-        fprintf(stderr, "Certificate + signed nonce too long\n");
-        free(signed_nonce);
-        return NULL;
-    }
-    *response_length = (uint32_t)out_len;
-
-    unsigned char* buf_og = malloc(out_len);
-    unsigned char* buf = buf_og;
-
-    encode_u32_be(buf, (uint32_t)sig_len); buf += sizeof(uint32_t);
-    memcpy(buf, signed_nonce, sig_len); buf += sig_len;
-    encode_u32_be(buf, info->certificate_len); buf += sizeof(uint32_t);
-    memcpy(buf, info->certificate, info->certificate_len); buf += info->certificate_len;
-
-    free(signed_nonce);
-    return buf_og;
+    *response_length = (uint32_t)sig_len;
+    return signed_nonce;
 }
+
 unsigned char* tetrish_server_decrypt_session_key(const unsigned char* cipherkey, uint32_t cipherkey_len, TetrishCredential* info, uint32_t* response_length) {
     size_t shared_key_len;
     unsigned char* shared_key_buf = rsa_decrypt_block(info->private_key, cipherkey, cipherkey_len, &shared_key_len, 1);
@@ -234,7 +219,7 @@ unsigned char* tetrish_server_decrypt_session_key(const unsigned char* cipherkey
 
 unsigned char* tetrish_recv_frame(int fd, uint32_t* plaintext_length, SessionKey* key) {
     uint32_t encrypted_length;
-    if (recv_uint32_t(fd, &encrypted_length) == -1 || encrypted_length > FRAME_MAX - FRAME_LENGTH) {
+    if (recv_uint32_t(fd, &encrypted_length) == -1 || encrypted_length > FRAME_MAX) {
         return NULL;
     }
 
@@ -252,22 +237,19 @@ unsigned char* tetrish_recv_frame(int fd, uint32_t* plaintext_length, SessionKey
         return encrypted_msg;
     }
 
-    size_t length;
-    unsigned char* msg = session_decrypt(*key, encrypted_msg, encrypted_length, &length);
-    if (msg == NULL || length > FRAME_MAX - FRAME_LENGTH) {
+    unsigned char* msg = tetrish_session_decrypt(key, encrypted_msg, encrypted_length, plaintext_length);
+    if (msg == NULL) {
         free(encrypted_msg);
-        free(msg);
         return NULL;
     }
 
-    *plaintext_length = (uint32_t)length;
     free(encrypted_msg);
     return msg;
 }
 
 int tetrish_send_frame(int sockfd, const unsigned char* plaintext, uint32_t plaintext_length, SessionKey* key) {
     if (key == NULL) {
-        if (plaintext_length > FRAME_MAX - FRAME_LENGTH || send_uint32_t(sockfd, (uint32_t)plaintext_length) == -1 ||
+        if (plaintext_length > FRAME_MAX || send_uint32_t(sockfd, (uint32_t)plaintext_length) == -1 ||
         send_all(sockfd, plaintext, plaintext_length) == -1) {
                 return -1;
         }
@@ -276,10 +258,10 @@ int tetrish_send_frame(int sockfd, const unsigned char* plaintext, uint32_t plai
     }
 
     DTOR_DEFINE(dtor, 10);
-    size_t encrypted_length;
-    unsigned char* encrypted_msg = session_encrypt(*key, plaintext, plaintext_length, &encrypted_length);
+    uint32_t encrypted_length;
+    unsigned char* encrypted_msg = tetrish_session_encrypt(key, plaintext, plaintext_length, &encrypted_length);
     DTOR_INSERT(dtor, free, encrypted_msg);
-    if (encrypted_msg == NULL || encrypted_length > FRAME_MAX - FRAME_LENGTH) {
+    if (encrypted_msg == NULL) {
         DTOR_RETURN(dtor, -1);
     }
 
@@ -289,4 +271,27 @@ int tetrish_send_frame(int sockfd, const unsigned char* plaintext, uint32_t plai
     }
 
     DTOR_RETURN(dtor, 0);
+}
+
+unsigned char* tetrish_session_encrypt(SessionKey* key, const unsigned char *plaintext, uint32_t plaintext_length, uint32_t *out_len) {
+    size_t encrypted_length;
+    unsigned char* encrypted_msg = session_encrypt(*key, plaintext, plaintext_length, &encrypted_length);
+    if (encrypted_msg == NULL || encrypted_length > FRAME_MAX) {
+        free(encrypted_msg);
+        return NULL;
+    }
+    *out_len = (uint32_t)encrypted_length;
+    return encrypted_msg;
+}
+
+unsigned char* tetrish_session_decrypt(SessionKey* key, const unsigned char *encrypted_msg, uint32_t encrypted_length, uint32_t *out_len) {
+    size_t length;
+    unsigned char* msg = session_decrypt(*key, encrypted_msg, encrypted_length, &length);
+    if (msg == NULL || length > FRAME_MAX) {
+        free(msg);
+        return NULL;
+    }
+
+    *out_len = (uint32_t)length;
+    return msg;
 }
