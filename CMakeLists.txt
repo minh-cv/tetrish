@@ -3,13 +3,13 @@ project(tetrish LANGUAGES C)
 
 add_compile_options(-g -Wall -Wextra -Wpedantic -Wconversion -Wno-strict-prototypes)
 
-add_library(libhtttp SHARED src/libhtttp/htttp.c)
+add_library(libhtttp src/libhtttp/htttp.c)
 target_include_directories(libhtttp PRIVATE include)
 
-add_library(libtetrissh SHARED src/libtetrissh/tetrissh.c)
+add_library(libtetrissh src/libtetrissh/tetrissh.c)
 target_include_directories(libtetrissh PRIVATE include)
 
-add_library(libtetrisbrain SHARED src/libtetrisbrain/tetrisbrain.c)
+add_library(libtetrisbrain src/libtetrisbrain/tetrisbrain.c)
 target_include_directories(libtetrisbrain PRIVATE include)
 
 add_library(common src/common/common.c)
@@ -19,6 +19,11 @@ add_executable(tetrisctl src/tetrisctl/main.c)
 add_executable(tetrisd src/tetrisd/main.c)
 add_executable(tetrislogd src/tetrislogd/main.c)
 add_executable(tetrisu src/tetrisu/main.c)
+
+foreach(target tetrisd tetrisu)
+    target_include_directories(${target} PRIVATE include)
+    target_link_libraries(${target} PRIVATE libhtttp)
+endforeach()
 
 add_library(perms src/tetrish/libs/perms.c)
 target_include_directories(perms PRIVATE include)
