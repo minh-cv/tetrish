@@ -114,7 +114,7 @@ int transit_read(struct client* c, TetrishCredential* credential) {
             client_push_frame(c, &frame, 1);
             client_transit_state(c, CLIENT_AUTH_SUCCESS, CLIENT_WRITING, 1);
 
-            return 0;
+            DTOR_RETURN(dtor, 0);
         }
     }
 
