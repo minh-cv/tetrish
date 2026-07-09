@@ -44,6 +44,9 @@ target_include_directories(backup PRIVATE src/tetrish)
 add_executable(sys src/tetrish/system_programs/sys.c)
 target_include_directories(sys PRIVATE src/tetrish)
 
+add_executable(hash src/tetrish/system_programs/hash.c)
+set_target_properties(hash PROPERTIES OUTPUT_NAME "#")
+
 install(
     TARGETS
         libhtttp
@@ -58,6 +61,7 @@ install(
         ldr
         find
         backup
+        hash
     RUNTIME DESTINATION bin           # for executables (and DLLs on Windows)
     LIBRARY DESTINATION lib           # for shared libraries on Unix
     ARCHIVE DESTINATION lib           # for static libs (.a, .lib)
