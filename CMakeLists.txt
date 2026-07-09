@@ -47,6 +47,9 @@ target_include_directories(sys PRIVATE src/tetrish)
 add_executable(hash src/tetrish/system_programs/hash.c)
 set_target_properties(hash PROPERTIES OUTPUT_NAME "#")
 
+add_library(config src/config/config.c)
+target_include_directories(config PRIVATE include)
+
 install(
     TARGETS
         libhtttp
