@@ -21,28 +21,28 @@ add_executable(tetrislogd src/tetrislogd/main.c)
 add_executable(tetrisu src/tetrisu/main.c)
 
 add_library(perms src/tetrish/libs/perms.c)
-target_include_directories(perms PRIVATE include)
+target_include_directories(perms PUBLIC src/tetrish)
 
 add_executable(tetrish src/tetrish/main.c src/tetrish/shell.c)
-target_include_directories(tetrish PRIVATE include)
+target_include_directories(tetrish PRIVATE src/tetrish)
 
 add_executable(ld src/tetrish/system_programs/ld.c)
-target_include_directories(ld PRIVATE include)
+target_include_directories(ld PRIVATE src/tetrish)
 target_link_libraries(ld PRIVATE perms)
 
 add_executable(ldr src/tetrish/system_programs/ldr.c)
-target_include_directories(ldr PRIVATE include)
+target_include_directories(ldr PRIVATE src/tetrish)
 target_link_libraries(ldr PRIVATE perms)
 
 add_executable(find src/tetrish/system_programs/find.c)
-target_include_directories(find PRIVATE include)
+target_include_directories(find PRIVATE src/tetrish)
 target_link_libraries(find PRIVATE perms)
 
 add_executable(backup src/tetrish/system_programs/backup.c)
-target_include_directories(backup PRIVATE include)
+target_include_directories(backup PRIVATE src/tetrish)
 
 add_executable(sys src/tetrish/system_programs/sys.c)
-target_include_directories(sys PRIVATE include)
+target_include_directories(sys PRIVATE src/tetrish)
 
 install(
     TARGETS

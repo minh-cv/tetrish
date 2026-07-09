@@ -1,4 +1,4 @@
-#include "tetrish/system_program.h"
+#include "libs/system_program.h"
 /*
  List all files matching the name in args[1] under current directory and subdirectories
 */

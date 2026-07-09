@@ -1,5 +1,5 @@
-#include "tetrish/system_program.h"
-#include "tetrish/perms.h"
+#include "libs/system_program.h"
+#include "libs/perms.h"
 
 void print_path_with_colored_slash(const char *path)
 {
