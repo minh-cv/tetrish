@@ -5,28 +5,6 @@
 #include <stdlib.h>
 #include <string.h>
 
-const char* const DEFAULT_REQUIRED_DIRECTIVES[] = {
-    "listen_port",
-    "cert_path",
-    "key_path",
-    "ca_path",
-    "log_path",
-    "log_ipc",
-};
-
-const char* const DEFAULT_OPTIONAL_DIRECTIVES[] = {
-    "max_clients",
-    "max_events",
-};
-
-const char* const DEFAULT_DEFAULT_ARGUMENTS[] = {
-    "1024",
-    "64"
-};
-
-const size_t DEFAULT_REQUIRED_DIRECTIVES_LENGTH = sizeof(DEFAULT_REQUIRED_DIRECTIVES)/sizeof(DEFAULT_REQUIRED_DIRECTIVES[0]);
-const size_t DEFAULT_OPTIONAL_DIRECTIVES_LENGTH = sizeof(DEFAULT_OPTIONAL_DIRECTIVES)/sizeof(DEFAULT_OPTIONAL_DIRECTIVES[0]);
-
 const char** config(const char* const required_directives[], size_t required_directives_count,
            const char* const optional_directives[], const char* const default_arguments[],
            size_t optional_directives_count) {
@@ -74,8 +52,4 @@ char* concat_path(const char* first, const char* second) {
     sprintf(path, "%.*s/%.*s", (int)first_len, first, (int)second_len, second);
 
     return path;
-}
-
-const char** config_default() {
-    return config(DEFAULT_REQUIRED_DIRECTIVES, DEFAULT_REQUIRED_DIRECTIVES_LENGTH, DEFAULT_OPTIONAL_DIRECTIVES, DEFAULT_DEFAULT_ARGUMENTS, DEFAULT_OPTIONAL_DIRECTIVES_LENGTH);
 }
