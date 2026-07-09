@@ -8,6 +8,7 @@ target_include_directories(libhtttp PRIVATE include)
 
 add_library(libtetrissh src/libtetrissh/tetrissh.c)
 target_include_directories(libtetrissh PRIVATE include)
+target_link_libraries(libtetrissh PUBLIC crypto common)
 
 add_library(libtetrisbrain src/libtetrisbrain/tetrisbrain.c)
 target_include_directories(libtetrisbrain PRIVATE include)
@@ -22,7 +23,7 @@ add_executable(tetrisu src/tetrisu/main.c)
 
 foreach(target tetrisd tetrisu)
     target_include_directories(${target} PRIVATE include)
-    target_link_libraries(${target} PRIVATE libhtttp common crypto)
+    target_link_libraries(${target} PRIVATE libhtttp common libtetrissh)
 endforeach()
 
 add_library(perms src/tetrish/libs/perms.c)
