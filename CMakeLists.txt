@@ -17,7 +17,9 @@ add_library(common src/common/common.c)
 target_include_directories(common PRIVATE include)
 
 add_executable(tetrisctl src/tetrisctl/main.c)
-add_executable(tetrisd src/tetrisd/main.c)
+add_executable(tetrisd src/tetrisd/main.c src/tetrisd/client.c src/tetrisd/state.c src/tetrisd/epollmanip.c)
+target_include_directories(tetrisd PRIVATE src/tetrisd)
+
 add_executable(tetrislogd src/tetrislogd/main.c)
 add_executable(tetrisu src/tetrisu/main.c)
 
