@@ -9,8 +9,12 @@ target_include_directories(libhtttp PRIVATE include)
 add_library(libtetrissh SHARED src/libtetrissh/tetrissh.c)
 target_include_directories(libtetrissh PRIVATE include)
 
-add_library(libtetrisbrain SHARED src/libtetrisbrain/tetrisbrain.c)
+add_library(libtetrisbrain
+    src/libtetrisbrain/control.c
+    src/libtetrisbrain/state.c
+    src/libtetrisbrain/static.c)
 target_include_directories(libtetrisbrain PRIVATE include)
+target_compile_options(libtetrisbrain PRIVATE -Wno-missing-braces)
 
 add_library(common src/common/common.c)
 target_include_directories(common PRIVATE include)
