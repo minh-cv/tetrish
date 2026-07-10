@@ -48,10 +48,20 @@ const char* config_get_arg(const Config* cfg, const char* directive) {
     return NULL;
 }
 
-const char* config_get_path(const Config* cfg, const char* directive, const char* project_dir) {
+char* config_get_path(const Config* cfg, const char* directive, const char* project_dir) {
     const char* path = config_get_arg(cfg, directive);
     if (path == NULL) {
         return NULL;
+    }
+
+    if (path[0] == '/') {
+        char* new_path = malloc(strlen(path) + 1);
+        if (new_path == NULL) {
+            return NULL;
+        }
+
+        strcpy(new_path, path);
+        return new_path;
     }
 
     return concat_path(project_dir, path);
