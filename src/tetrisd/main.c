@@ -1,3 +1,4 @@
+#include "config_var.h"
 #include "dtor.h"
 #include "epollmanip.h"
 #include "tetrissh.h"
@@ -21,9 +22,6 @@
 #include <sys/socket.h>
 #include <sys/types.h>
 #include <unistd.h>
-
-#define MAX_EVENTS 64
-#define MAX_CLIENTS 1024
 
 static volatile sig_atomic_t running = 1;
 
@@ -50,47 +48,27 @@ static int close_ptr(const int* fd) {
 }
 
 static DTOR_WRAPPER_DEFINE(close_ptr)
+static DTOR_WRAPPER_DEFINE(config_var_free)
+static DTOR_WRAPPER_DEFINE(free)
 
-int main(int argc, char** argv) {
-    DTOR_DEFINE(dtor, 20);
-    
-    struct sigaction sa = {0};
-    sa.sa_handler = handle_signal;
-    sigemptyset(&sa.sa_mask);
-    sa.sa_flags = 0;
-
-    if (sigaction(SIGINT, &sa, NULL) == -1 ||
-        sigaction(SIGTERM, &sa, NULL) == -1) {
-        perror("sigaction");
-        DTOR_RETURN(dtor, 1);
-    }
-
-    TetrishCredential credential;
-    if (tetrish_credential_init(&credential, "auth/server_private_key.pem", "auth/server_signed.crt") == -1) {
-        perror("credential init");
-        DTOR_RETURN(dtor, 1);
-    }
-    DTOR_INSERT(dtor, tetrish_credential_free, &credential);
-
-    int port = (argc > 1) ? atoi(argv[1]) : 4321;
-    const char *address = (argc > 2) ? argv[2] : "localhost";
-
+static int prepare_socket(const char* address, int port) {
+    DTOR_DEFINE(dtor, 10);
     int listen_fd = socket(AF_INET, SOCK_STREAM, 0);
     if (listen_fd == -1) {
         perror("socket");
-        return 1;
+        DTOR_RETURN(dtor, -1);
     }
     DTOR_INSERT(dtor, close_ptr, &listen_fd);
 
     int opt = 1;
     if (setsockopt(listen_fd, SOL_SOCKET, SO_REUSEADDR, &opt, sizeof(opt)) == -1) {
         perror("setsockopt");
-        DTOR_RETURN(dtor, 1);
+        DTOR_RETURN(dtor, -1);
     }
 
     if (set_nonblocking(listen_fd) == -1) {
         perror("set_nonblocking listen_fd");
-        DTOR_RETURN(dtor, 1);
+        DTOR_RETURN(dtor, -1);
     }
 
     struct sockaddr_in addr;
@@ -107,13 +85,49 @@ int main(int argc, char** argv) {
 
     if (bind(listen_fd, (struct sockaddr *)&addr, sizeof(addr)) == -1) {
         perror("bind");
-        DTOR_RETURN(dtor, 1);
+        DTOR_RETURN(dtor, -1);
     }
 
     if (listen(listen_fd, SOMAXCONN) == -1) {
         perror("listen");
+        DTOR_RETURN(dtor, -1);
+    }
+
+    return listen_fd;
+}
+
+int main() {
+    DTOR_DEFINE(dtor, 20);
+    
+    struct sigaction sa = {0};
+    sa.sa_handler = handle_signal;
+    sigemptyset(&sa.sa_mask);
+    sa.sa_flags = 0;
+
+    if (sigaction(SIGINT, &sa, NULL) == -1 ||
+        sigaction(SIGTERM, &sa, NULL) == -1) {
+        perror("sigaction");
         DTOR_RETURN(dtor, 1);
     }
+
+    struct config_var cfg;
+    if (config_var_init(&cfg) == -1) {
+        DTOR_RETURN(dtor, -1);
+    }
+    DTOR_INSERT(dtor, config_var_free, &cfg);
+
+    TetrishCredential credential;
+    if (tetrish_credential_init(&credential, cfg.key_path, cfg.cert_path) == -1) {
+        perror("credential init");
+        DTOR_RETURN(dtor, 1);
+    }
+    DTOR_INSERT(dtor, tetrish_credential_free, &credential);
+
+    int listen_fd = prepare_socket(cfg.address, cfg.port);
+    if (listen_fd == -1) {
+        return 1;
+    }
+    DTOR_INSERT(dtor, close_ptr, &listen_fd);
 
     int epoll_fd = epoll_create1(0);
     if (epoll_fd == -1) {
@@ -131,13 +145,24 @@ int main(int argc, char** argv) {
         DTOR_RETURN(dtor, 1);
     }
 
-    printf("server listening on port %d\n", port);
+    printf("server listening on port %d\n", cfg.port);
 
-    struct client *clients[MAX_CLIENTS] = {0};
+    struct client **clients = calloc((size_t)cfg.max_clients, sizeof(*clients));
+    if (clients == NULL) {
+        fprintf(stderr, "clients NULL\n");
+        DTOR_RETURN(dtor, -1);
+    }
+    DTOR_INSERT(dtor, free, clients);
+
+    struct epoll_event* events = calloc((size_t)cfg.max_events, sizeof(*events));
+    if (events == NULL) {
+        fprintf(stderr, "events NULL\n");
+        DTOR_RETURN(dtor, -1);
+    }
+    DTOR_INSERT(dtor, free, events);
+
     while (running) {
-        struct epoll_event events[MAX_EVENTS];
-
-        int n = epoll_wait(epoll_fd, events, MAX_EVENTS, -1);
+        int n = epoll_wait(epoll_fd, events, cfg.max_events, -1);
         if (n == -1) {
             if (errno == EINTR) {
                 continue;
@@ -164,7 +189,7 @@ int main(int argc, char** argv) {
                         break;
                     }
 
-                    if (client_fd >= MAX_CLIENTS) {
+                    if (client_fd >= cfg.max_clients) {
                         errno = EMFILE;
                         perror("client_fd too large");
                         continue;
@@ -186,7 +211,7 @@ int main(int argc, char** argv) {
                 continue;
             }
 
-            if (fd < 0 || fd >= MAX_CLIENTS || clients[fd] == NULL) {
+            if (fd < 0 || fd >= cfg.max_clients || clients[fd] == NULL) {
                 continue;
             }
 
@@ -219,7 +244,7 @@ int main(int argc, char** argv) {
         }
     }
 
-    for (int fd = 0; fd < MAX_CLIENTS; fd++) {
+    for (int fd = 0; fd < cfg.max_clients; fd++) {
         if (clients[fd]) {
             close_client(epoll_fd, clients[fd]);
         }
