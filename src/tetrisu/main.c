@@ -1,8 +1,8 @@
 #include "common.h"
+#include "config_var.h"
 #include "htttp.h"
 #include <arpa/inet.h>
 #include <assert.h>
-#include <errno.h>
 #include <netdb.h>
 #include <netinet/in.h>
 #include <openssl/x509.h>
@@ -80,15 +80,32 @@ int htttp_receive(int fd, htttp_message_t* message, unsigned char (*shared_key)[
     DTOR_RETURN(dtor, 0);
 }
 
-int main(int argc, char** argv) {
-    int port = (argc > 1) ? atoi(argv[1]) : 4321;
-    const char *server_address = (argc > 2) ? argv[2] : "localhost";
+DTOR_WRAPPER_DEFINE(config_var_free)
+
+static void close_ptr(int* fd) {
+    close(*fd);
+}
+
+DTOR_WRAPPER_DEFINE(close_ptr)
+
+int main() {
+    DTOR_DEFINE(dtor, 10);
+
+    struct config_var cfg;
+    if (config_var_init(&cfg) == -1) {
+        DTOR_RETURN(dtor, 1);
+    }
+    DTOR_INSERT(dtor, config_var_free, &cfg);
+
+    int port = cfg.port;
+    const char* server_address = cfg.address;
 
     int sockfd = socket(AF_INET, SOCK_STREAM, 0);
     if (sockfd == -1) {
         perror("socket");
-        return 1;
+        DTOR_RETURN(dtor, 1);
     }
+    DTOR_INSERT(dtor, close_ptr, &sockfd);
 
     struct sockaddr_in addr = {0};
     addr.sin_family = AF_INET;
@@ -98,23 +115,22 @@ int main(int argc, char** argv) {
     if (!he)
     {
         fprintf(stderr, "Cannot resolve host: %s\n", server_address);
-        return 1;
+        DTOR_RETURN(dtor, 1);
     }
     memcpy(&addr.sin_addr, he->h_addr_list[0], (size_t)he->h_length);
 
 
     if (connect(sockfd, (struct sockaddr *)&addr, sizeof(addr)) == -1) {
         perror("connect");
-        close(sockfd);
-        return 1;
+        DTOR_RETURN(dtor, 1);
     }
 
     printf("connected to %s:%d\n", server_address, port);
 
     SessionKey shared_key;
-    if (tetrish_client_handshake(sockfd, "auth/cacsertificate.crt", &shared_key) == -1) {
+    if (tetrish_client_handshake(sockfd, cfg.ca_path, &shared_key) == -1) {
         perror("handshake");
-        return 1;
+        DTOR_RETURN(dtor, 1);
     }
 
     while (true) {
@@ -156,6 +172,5 @@ int main(int argc, char** argv) {
         htttp_message_free(&reply);
     }
 
-    close(sockfd);
-    return 0;
+    DTOR_RETURN(dtor, 0);
 }

@@ -21,7 +21,9 @@ add_executable(tetrisd src/tetrisd/main.c src/tetrisd/client.c src/tetrisd/state
 target_include_directories(tetrisd PRIVATE src/tetrisd)
 
 add_executable(tetrislogd src/tetrislogd/main.c)
-add_executable(tetrisu src/tetrisu/main.c)
+add_executable(tetrisu src/tetrisu/main.c
+    src/tetrisu/config_var.c)
+target_include_directories(tetrisu PRIVATE src/tetrisu)
 
 foreach(target tetrisd tetrisu)
     target_include_directories(${target} PRIVATE include)
