@@ -1,4 +1,4 @@
-#include "tetrish/shell.h"
+#include "libs/shell.h"
 #include <assert.h>
 #include <limits.h>
 #include <stdbool.h>

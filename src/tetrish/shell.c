@@ -2,7 +2,7 @@
 // Modify it for your own usage to implement features for PA1 (or completely
 // rewrite it) Include the shell header file for necessary constants and
 // function declarations
-#include "tetrish/shell.h"
+#include "libs/shell.h"
 #include <assert.h>
 #include <stddef.h>
 #include <stdint.h>

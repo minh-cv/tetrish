@@ -1,4 +1,4 @@
-#include "tetrish/perms.h"
+#include "libs/perms.h"
 #include <string.h>
 
 // Function to convert permissions to a string
