@@ -2,6 +2,7 @@
 #include "config.h"
 #include "dtor.h"
 #include <assert.h>
+#include <stdint.h>
 #include <stdio.h>
 #include <stdlib.h>
 
@@ -48,7 +49,7 @@ int config_var_init(struct config_var* cfg_var) {
     DTOR_INSERT(errdtor, config_free, &config);
 
     long listen_port_long;
-    if (config_get_long_arg(&config, "listen_port", &listen_port_long) == -1) {
+    if (config_get_long_arg(&config, "listen_port", &listen_port_long) == -1 || listen_port_long > UINT16_MAX || listen_port_long <= 0) {
         fprintf(stderr, "listen_port invalid\n");
         DTOR_RETURN(errdtor, -1);
     }
