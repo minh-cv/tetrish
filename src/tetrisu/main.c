@@ -87,6 +87,48 @@ static void close_ptr(int* fd) {
 }
 
 DTOR_WRAPPER_DEFINE(close_ptr)
+DTOR_WRAPPER_DEFINE(freeaddrinfo)
+
+int prepare_socket(int port, const char* address) {
+    DTOR_DEFINE(dtor, 10);
+    
+    struct addrinfo hints = {0};
+    hints.ai_family = AF_INET;
+    hints.ai_socktype = SOCK_STREAM;
+
+    char port_str[6];
+    snprintf(port_str, sizeof(port_str), "%d", port);    
+
+    struct addrinfo* res;
+    int rc = getaddrinfo(address, port_str, &hints, &res);
+    if (rc != 0) {
+        fprintf(stderr, "getaddrinfo: %s\n", gai_strerror(rc));
+        DTOR_RETURN(dtor, -1);
+    }
+    DTOR_INSERT(dtor, freeaddrinfo, res);
+
+    for (struct addrinfo* p = res; p != NULL; p = p->ai_next) {
+        int listen_fd = socket(p->ai_family, p->ai_socktype, p->ai_protocol);
+
+        if (listen_fd == -1) {
+            perror("socket");
+            continue;
+        }
+
+        if (connect(listen_fd, p->ai_addr, p->ai_addrlen) == -1) {
+            perror("connect");
+            close(listen_fd);
+            continue;
+        }
+
+        DTOR_RETURN(dtor, listen_fd);
+
+    }
+
+    fprintf(stderr, "cannot connect\n");
+    DTOR_RETURN(dtor, -1);
+}
+
 
 int main() {
     DTOR_DEFINE(dtor, 10);
@@ -100,32 +142,11 @@ int main() {
     int port = cfg.port;
     const char* server_address = cfg.address;
 
-    int sockfd = socket(AF_INET, SOCK_STREAM, 0);
+    int sockfd = prepare_socket(port, server_address);
     if (sockfd == -1) {
-        perror("socket");
         DTOR_RETURN(dtor, 1);
     }
     DTOR_INSERT(dtor, close_ptr, &sockfd);
-
-    struct sockaddr_in addr = {0};
-    addr.sin_family = AF_INET;
-    addr.sin_port = htons((uint16_t)port);
-
-    struct hostent *he = gethostbyname(server_address);
-    if (!he)
-    {
-        fprintf(stderr, "Cannot resolve host: %s\n", server_address);
-        DTOR_RETURN(dtor, 1);
-    }
-    memcpy(&addr.sin_addr, he->h_addr_list[0], (size_t)he->h_length);
-
-
-    if (connect(sockfd, (struct sockaddr *)&addr, sizeof(addr)) == -1) {
-        perror("connect");
-        DTOR_RETURN(dtor, 1);
-    }
-
-    printf("connected to %s:%d\n", server_address, port);
 
     SessionKey shared_key;
     if (tetrish_client_handshake(sockfd, cfg.ca_path, &shared_key) == -1) {

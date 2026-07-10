@@ -8,6 +8,7 @@
 #include <assert.h>
 #include <errno.h>
 #include <fcntl.h>
+#include <netdb.h>
 #include <netinet/in.h>
 #include <openssl/evp.h>
 #include <openssl/types.h>
@@ -50,50 +51,66 @@ static int close_ptr(const int* fd) {
 static DTOR_WRAPPER_DEFINE(close_ptr)
 static DTOR_WRAPPER_DEFINE(config_var_free)
 static DTOR_WRAPPER_DEFINE(free)
+static DTOR_WRAPPER_DEFINE(freeaddrinfo)
 
 static int prepare_socket(const char* address, int port) {
     DTOR_DEFINE(dtor, 10);
-    int listen_fd = socket(AF_INET, SOCK_STREAM, 0);
-    if (listen_fd == -1) {
-        perror("socket");
-        DTOR_RETURN(dtor, -1);
-    }
-    DTOR_INSERT(dtor, close_ptr, &listen_fd);
+    
+    struct addrinfo hints = {0};
+    hints.ai_family = AF_INET;
+    hints.ai_socktype = SOCK_STREAM;
 
-    int opt = 1;
-    if (setsockopt(listen_fd, SOL_SOCKET, SO_REUSEADDR, &opt, sizeof(opt)) == -1) {
-        perror("setsockopt");
-        DTOR_RETURN(dtor, -1);
+    if (strcmp(address, "0.0.0.0") == 0) {
+        address = NULL;
+        hints.ai_flags = AI_PASSIVE;
     }
 
-    if (set_nonblocking(listen_fd) == -1) {
-        perror("set_nonblocking listen_fd");
+    char port_str[6];
+    snprintf(port_str, sizeof(port_str), "%d", port);    
+
+    struct addrinfo* res;
+    int rc = getaddrinfo(address, port_str, &hints, &res);
+    if (rc != 0) {
+        fprintf(stderr, "getaddrinfo: %s\n", gai_strerror(rc));
         DTOR_RETURN(dtor, -1);
     }
+    DTOR_INSERT(dtor, freeaddrinfo, res);
 
-    struct sockaddr_in addr;
-    memset(&addr, 0, sizeof(addr));
-    addr.sin_family = AF_INET;
-    addr.sin_port = htons((uint16_t)port);
+    for (struct addrinfo* p = res; p != NULL; p = p->ai_next) {
+        int listen_fd = socket(p->ai_family, p->ai_socktype, p->ai_protocol);
 
-    if (strcmp(address, "localhost") == 0)
-        addr.sin_addr.s_addr = htonl(INADDR_LOOPBACK);
-    else if (strcmp(address, "0.0.0.0") == 0)
-        addr.sin_addr.s_addr = htonl(INADDR_ANY);
-    else
-        inet_pton(AF_INET, address, &addr.sin_addr);
+        if (listen_fd == -1) {
+            perror("socket");
+            continue;
+        }
 
-    if (bind(listen_fd, (struct sockaddr *)&addr, sizeof(addr)) == -1) {
-        perror("bind");
-        DTOR_RETURN(dtor, -1);
+        int opt = 1;
+        if (setsockopt(listen_fd, SOL_SOCKET, SO_REUSEADDR, &opt, sizeof(opt)) == -1) {
+            perror("setsockopt");
+            close(listen_fd); continue;
+        }
+
+        if (set_nonblocking(listen_fd) == -1) {
+            perror("set_nonblocking listen_fd");
+            close(listen_fd); continue;
+        }
+
+        if (bind(listen_fd, p->ai_addr, p->ai_addrlen) == -1) {
+            perror("bind");
+            close(listen_fd); continue;
+        }
+
+        if (listen(listen_fd, SOMAXCONN) == -1) {
+            perror("listen");
+            close(listen_fd); continue;
+        }
+
+        DTOR_RETURN(dtor, listen_fd);
+
     }
 
-    if (listen(listen_fd, SOMAXCONN) == -1) {
-        perror("listen");
-        DTOR_RETURN(dtor, -1);
-    }
-
-    return listen_fd;
+    fprintf(stderr, "cannot make socket\n");
+    DTOR_RETURN(dtor, -1);
 }
 
 int main() {
@@ -185,13 +202,14 @@ int main() {
                         if (errno == EINTR) {
                             continue;
                         }
-                        perror("accept4");
+                        perror("accept");
                         break;
                     }
 
                     if (client_fd >= cfg.max_clients) {
                         errno = EMFILE;
                         perror("client_fd too large");
+                        close(client_fd);
                         continue;
                     }
 
