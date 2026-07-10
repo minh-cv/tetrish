@@ -50,8 +50,8 @@ int handle_read(int epoll_fd, struct client *c, TetrishCredential* credential) {
     
     for (;;) {
         if (c->state == CLIENT_READING_LEN) {
-            struct frame* f = &c->frame[c->frame_count];
-            f->is_heap_allocated = true;
+            struct frame actual_frame = {0};
+            struct frame *f = &actual_frame;
 
             ssize_t n = recv(c->fd,
                              f->len_buf + f->len_used,
@@ -90,12 +90,13 @@ int handle_read(int epoll_fd, struct client *c, TetrishCredential* credential) {
                 return -1;
             }
 
-            c->frame_count++;
+            f->is_heap_allocated = true;
+            client_push_frame(c, f, 1);
             c->state = CLIENT_READING_BODY;
         }
 
         if (c->state == CLIENT_READING_BODY) {
-            struct frame* f = &c->frame[c->frame_count - 1];
+            struct frame* f = client_get_top_frame(c);
             ssize_t n = recv(c->fd,
                              f->buf + f->used,
                              f->len - f->used,
@@ -145,7 +146,7 @@ int handle_read(int epoll_fd, struct client *c, TetrishCredential* credential) {
 
 int handle_write(int epoll_fd, struct client *c) {
     while (c->frame_active > 0) {
-        struct frame *f = &c->frame[c->frame_count - 1];
+        struct frame *f = client_get_top_frame(c);
 
         while (f->len_used < sizeof(f->len_buf)) {
             ssize_t n = send(c->fd,

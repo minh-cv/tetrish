@@ -27,13 +27,15 @@ typedef struct frame {
     bool is_heap_allocated;
 } frame;
 
+#define CLIENT_MAX_FRAME 5
+
 struct client {
     int fd;
     enum client_state state;
     enum client_auth_state auth_state;
 
     //! @brief a stack-like object containing frame, tracked by `frame_count`
-    frame frame[5];
+    frame frame[CLIENT_MAX_FRAME];
 
     //! @brief the number of frame objects currently available
     unsigned int frame_count;
@@ -48,6 +50,6 @@ void frame_free(struct frame* frame);
 void client_pop_frame(struct client* c, unsigned int count);
 void client_push_frame(struct client* c, const struct frame frames[], unsigned int count);
 void client_transit_state(struct client* c, enum client_auth_state auth_state, enum client_state write_state, unsigned int frame_active);
-
+struct frame* client_get_top_frame(struct client* c);
 
 #endif

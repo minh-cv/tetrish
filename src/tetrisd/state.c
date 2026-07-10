@@ -1,4 +1,5 @@
 #include "state.h"
+#include "client.h"
 #include "dtor.h"
 #include "htttp.h"
 #include "tetrissh.h"
@@ -32,7 +33,7 @@ int transit_read(struct client* c, TetrishCredential* credential) {
             struct frame* frame_nonce = &frames[0];
 
             frame_nonce->is_heap_allocated = true;
-            struct frame* f = &c->frame[0];
+            struct frame* f = client_get_top_frame(c);
             if ((frame_nonce->buf = tetrish_server_sign_nonce(f->buf, f->len, credential->private_key, &frame_nonce->len)) == NULL) {
                 return -1;
             }
@@ -54,7 +55,7 @@ int transit_read(struct client* c, TetrishCredential* credential) {
         case CLIENT_AUTH_SYMKEY: {
             assert(c->frame_count == 1);
 
-            struct frame* f = &c->frame[0];
+            struct frame* f = client_get_top_frame(c);
             unsigned char* buf;
             uint32_t len;
             if ((buf = tetrish_server_decrypt_session_key(f->buf, f->len, credential, &len)) == NULL) {
@@ -71,7 +72,7 @@ int transit_read(struct client* c, TetrishCredential* credential) {
         case CLIENT_AUTH_SUCCESS: {
             assert(c->frame_count == 1);
 
-            if (print_client_message(&c->session_key, c->fd, &c->frame[0]) == -1) {
+            if (print_client_message(&c->session_key, c->fd, client_get_top_frame(c)) == -1) {
                 return -1;
             }
 
@@ -116,8 +117,9 @@ int transit_read(struct client* c, TetrishCredential* credential) {
 
             DTOR_RETURN(dtor, 0);
         }
-    }
 
-    return -1;
+        default:
+        return -1;
+    }
 }
 
