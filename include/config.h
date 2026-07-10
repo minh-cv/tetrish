@@ -25,9 +25,10 @@ int config_make(Config* cfg);
 
     Getting `NULL` should be considered a logic error if there is no need to detect whether a directive exists.
 */
-const char* config_get_directive(const Config* cfg, const char* directive);
+const char* config_get_arg(const Config* cfg, const char* directive);
+const char* config_get_path(const Config* cfg, const char* directive, const char* project_dir);
+int config_get_long_arg(const Config* cfg, const char* directive, long* out);
 void config_free(Config* cfg);
-int config_get_long_directive(const Config* cfg, const char* directive, long* out);
 char* concat_path(const char* first, const char* second);
 
 #endif

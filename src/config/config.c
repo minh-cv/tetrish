@@ -32,7 +32,7 @@ int config_make(Config* cfg) {
     return 0;
 }
 
-const char* config_get_directive(const Config* cfg, const char* directive) {
+const char* config_get_arg(const Config* cfg, const char* directive) {
     for (size_t i = 0; i < cfg->required_directives_count; i++) {
         if (strcmp(cfg->required_directives[i], directive) == 0) {
             return cfg->arguments[i];
@@ -48,12 +48,21 @@ const char* config_get_directive(const Config* cfg, const char* directive) {
     return NULL;
 }
 
+const char* config_get_path(const Config* cfg, const char* directive, const char* project_dir) {
+    const char* path = config_get_arg(cfg, directive);
+    if (path == NULL) {
+        return NULL;
+    }
+
+    return concat_path(path, project_dir);
+}
+
 void config_free(Config *cfg) {
     free(cfg->arguments);
 }
 
-int config_get_long_directive(const Config* cfg, const char* directive, long* out) {
-    const char* arg = config_get_directive(cfg, directive);
+int config_get_long_arg(const Config* cfg, const char* directive, long* out) {
+    const char* arg = config_get_arg(cfg, directive);
     if (arg == NULL) {
         return -1;
     }
