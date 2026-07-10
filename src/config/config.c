@@ -54,7 +54,7 @@ const char* config_get_path(const Config* cfg, const char* directive, const char
         return NULL;
     }
 
-    return concat_path(path, project_dir);
+    return concat_path(project_dir, path);
 }
 
 void config_free(Config *cfg) {
