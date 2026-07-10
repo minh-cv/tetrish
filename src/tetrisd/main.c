@@ -1,4 +1,5 @@
 #include "config_var.h"
+#include "daemon.h"
 #include "dtor.h"
 #include "epollmanip.h"
 #include "tetrissh.h"
@@ -125,6 +126,18 @@ int main() {
         sigaction(SIGTERM, &sa, NULL) == -1) {
         perror("sigaction");
         DTOR_RETURN(dtor, 1);
+    }
+
+    switch (incantation()) {
+    case 0:
+        DTOR_RETURN(dtor, 0);
+    case -1:
+        perror("incantation");
+        DTOR_RETURN(dtor, 1);
+    case 1:
+        break;
+    default:
+        assert(false);
     }
 
     struct config_var cfg;

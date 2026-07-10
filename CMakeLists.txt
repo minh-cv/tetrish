@@ -1,6 +1,9 @@
 cmake_minimum_required(VERSION 3.10)
 project(tetrish LANGUAGES C)
 
+option(TETRISH_DEV_MODE "Enable dev-mode macros" OFF)
+option(TETRISH_TETRISD_NO_DAEMON "Disable daemonization of tetrisd" ${TETRISH_DEV_MODE})
+
 add_compile_options(-g -Wall -Wextra -Wpedantic -Wconversion -Wno-strict-prototypes)
 
 add_library(libhtttp src/libhtttp/htttp.c)
@@ -17,8 +20,11 @@ add_library(common src/common/common.c)
 target_include_directories(common PRIVATE include)
 
 add_executable(tetrisctl src/tetrisctl/main.c)
-add_executable(tetrisd src/tetrisd/main.c src/tetrisd/client.c src/tetrisd/state.c src/tetrisd/epollmanip.c src/tetrisd/config_var.c)
+add_executable(tetrisd src/tetrisd/main.c src/tetrisd/client.c src/tetrisd/state.c src/tetrisd/epollmanip.c src/tetrisd/config_var.c src/tetrisd/daemon.c)
 target_include_directories(tetrisd PRIVATE src/tetrisd)
+target_compile_definitions(tetrisd PRIVATE 
+    $<$<BOOL:${TETRISH_TETRISD_NO_DAEMON}>:TETRISH_TETRISD_NO_DAEMON>
+)
 
 add_executable(tetrislogd src/tetrislogd/main.c)
 add_executable(tetrisu src/tetrisu/main.c
