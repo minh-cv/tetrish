@@ -1,35 +1,74 @@
 #include "config.h"
+#include <errno.h>
 #include <limits.h>
 #include <stdbool.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
 
-const char** config(const char* const required_directives[], size_t required_directives_count,
-           const char* const optional_directives[], const char* const default_arguments[],
-           size_t optional_directives_count) {
-    const char** config_list = malloc((required_directives_count + optional_directives_count)*sizeof(*config_list));
+int config_make(Config* cfg) {
+    const char** config_list = malloc((cfg->required_directives_count + cfg->optional_directives_count)*sizeof(*config_list));
 
     if (config_list == NULL) {
-        return NULL;
+        return -1;
     }
 
-    for (size_t i = 0; i < required_directives_count; i++) {
-        if ((config_list[i] = getenv(required_directives[i])) == NULL) {
+    for (size_t i = 0; i < cfg->required_directives_count; i++) {
+        if ((config_list[i] = getenv(cfg->required_directives[i])) == NULL) {
             free(config_list);
-            return NULL;
+            return -1;
         }
     }
 
-    for (size_t i = 0; i < optional_directives_count; i++) {
-        const char* cfg = getenv(optional_directives[i]);
-        if (cfg == NULL) {
-            cfg = default_arguments[i];
+    for (size_t i = 0; i < cfg->optional_directives_count; i++) {
+        const char* c = getenv(cfg->optional_directives[i]);
+        if (c == NULL) {
+            c = cfg->arguments[i];
         }
-        config_list[i + required_directives_count] = cfg;
+        config_list[i + cfg->required_directives_count] = c;
     }
 
-    return config_list;
+    cfg->arguments = config_list;
+    return 0;
+}
+
+const char* config_get_directive(const Config* cfg, const char* directive) {
+    for (size_t i = 0; i < cfg->required_directives_count; i++) {
+        if (strcmp(cfg->required_directives[i], directive) == 0) {
+            return cfg->arguments[i];
+        }
+    }
+
+    for (size_t i = 0; i < cfg->optional_directives_count; i++) {
+        if (strcmp(cfg->optional_directives[i], directive) == 0) {
+            return cfg->arguments[i + cfg->required_directives_count];
+        }
+    }
+
+    return NULL;
+}
+
+void config_free(Config *cfg) {
+    free(cfg->arguments);
+}
+
+int config_get_long_directive(const Config* cfg, const char* directive, long* out) {
+    const char* arg = config_get_directive(cfg, directive);
+    if (arg == NULL) {
+        return -1;
+    }
+    char* endptr;
+    errno = 0;
+    *out = strtol(arg, &endptr, 0);
+
+    if (errno == ERANGE) {
+        return -1;
+    }
+    if (*arg == '\0' || *endptr != '\0') {
+        return -1;
+    }
+
+    return 0;
 }
 
 char* concat_path(const char* first, const char* second) {
