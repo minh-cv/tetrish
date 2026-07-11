@@ -4,17 +4,18 @@ project(tetrish LANGUAGES C)
 add_compile_options(-g -Wall -Wextra -Wpedantic -Wconversion -Wno-strict-prototypes)
 
 add_library(libhtttp src/libhtttp/htttp.c)
-target_include_directories(libhtttp PRIVATE include)
+target_include_directories(libhtttp PUBLIC include)
 
 add_library(libtetrissh src/libtetrissh/tetrissh.c)
-target_include_directories(libtetrissh PRIVATE include)
-target_link_libraries(libtetrissh PUBLIC crypto common)
+target_include_directories(libtetrissh PUBLIC include)
+target_link_libraries(libtetrissh PUBLIC common)
 
 add_library(libtetrisbrain src/libtetrisbrain/tetrisbrain.c)
-target_include_directories(libtetrisbrain PRIVATE include)
+target_include_directories(libtetrisbrain PUBLIC include)
 
 add_library(common src/common/common.c)
-target_include_directories(common PRIVATE include)
+target_include_directories(common PUBLIC include)
+target_link_libraries(common PUBLIC crypto)
 
 add_executable(tetrisctl src/tetrisctl/main.c)
 add_executable(tetrisd src/tetrisd/main.c src/tetrisd/client.c src/tetrisd/state.c src/tetrisd/epollmanip.c src/tetrisd/config_var.c)
