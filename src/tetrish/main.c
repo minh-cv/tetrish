@@ -1,12 +1,22 @@
 #include "libs/shell.h"
 #include <assert.h>
+#include <errno.h>
 #include <limits.h>
+#include <signal.h>
 #include <stdbool.h>
 #include <stdint.h>
 #include <stdlib.h>
 #include <string.h>
 #include <unistd.h>
 #include <stdio.h>
+
+volatile sig_atomic_t has_child_pid = 0;
+pid_t child_pid;
+
+static void sigint_handler(int _) {
+    if (has_child_pid == 0) return;
+    kill(child_pid, SIGINT);
+}
 
 static void free_cmd(char** cmd) {
     for (int i = 0; cmd[i] != NULL && i < MAX_ARGS; i++) {
@@ -58,16 +68,16 @@ void body(FILE* input) {
             fprintf(stderr, "Cannot spawn task\n");
         }
         else {
-            waitpid(pid, &child_status, WUNTRACED);
-            if (WIFEXITED(child_status)) {
-                int exit_status = WEXITSTATUS(child_status);
-                if (exit_status != 0) {
-                    printf("tetrish: Child process exit with status %d\n", exit_status);
+            child_pid = pid;
+            has_child_pid = 1;
+            while (true) {
+                int rc = waitpid(pid, &child_status, WUNTRACED);
+                if (rc == 0) break;
+                if (rc == -1) {
+                    if (errno != EINTR) break;
                 }
             }
-            else {
-                printf("tetrish: Child status terminated abnormally\n");
-            }
+            has_child_pid = 0;
         }
         free_cmd(cmd);
         if (!read_command_result) {
@@ -78,6 +88,7 @@ void body(FILE* input) {
 
 // The main function where the shell's execution begins
 int main(void) {
+    signal(SIGINT, sigint_handler);
     clear();
     FILE* shellrc = fopen(".tetrishrc", "r");
     if (shellrc != NULL) {
