@@ -56,6 +56,9 @@ int config_var_init(struct config_var* cfg_var) {
     else {
         size_t address_default_len = strlen(ADDRESS_DEFAULT);
         address = malloc(address_default_len + 1);
+        if (address == NULL) {
+            DTOR_ERR_RETURN(errdtor, dtor, -1);
+        }
         memcpy(address, ADDRESS_DEFAULT, address_default_len);
         address[address_default_len] = '\0';
         DTOR_INSERT(errdtor, free, address);
