@@ -3,29 +3,24 @@
 
 #include <stddef.h>
 
+#define CONFIG_MAX_ARGS 32u
+
 typedef struct Config {
-    size_t required_directives_count;
-    size_t optional_directives_count;
-    const char* const* required_directives;
-    const char* const* optional_directives;
-    const char** arguments;
+    char* argn[CONFIG_MAX_ARGS];
+    char* argv[CONFIG_MAX_ARGS];
+    size_t argc;
 } Config;
 
 /*! 
-    @brief Make a full config from partial config.
-    
-    All fields in `Config` must be filled, with `arguments` being filled as the default arguments
-    
+    @brief Read the config from the file path.    
     The returned config will have argument replaced with a malloc'd arguments list containing both actual required and optional arguments.
 */
-int config_make(Config* cfg);
+int config_make(Config* cfg, const char* tetrishrc_path);
 
 /*!
-    @brief Find the argument of the corresponding directive, returning `NULL` if not found.
-
-    Getting `NULL` should be considered a logic error if there is no need to detect whether a directive exists.
+    @brief Find the argument of the corresponding directive, returning CONFIG_MAX_ARGS if not found.
 */
-const char* config_get_arg(const Config* cfg, const char* directive);
+size_t config_get_arg_idx(const Config* cfg, const char* directive);
 
 /*!
     @brief Read the corresponding path of directive, optionally prefix project_dir to the path if path is not an absolute path.
