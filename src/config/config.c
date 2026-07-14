@@ -110,7 +110,7 @@ int config_make(Config* cfg, const char* tetrishrc_path) {
     }
     file_content[length] = '\0';
     DTOR_INSERT(dtor, free, file_content);
-    if (fread(file_content, (size_t)length, 1, tetrishrc_file) != 1) {
+    if (fread(file_content, 1, (size_t)length, tetrishrc_file) != (size_t)length) {
         perror("fread");
         DTOR_RETURN(dtor, -1);
     }
