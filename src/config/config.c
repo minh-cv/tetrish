@@ -59,10 +59,12 @@ int parse_content(Config* cfg, char* content) {
         size_t argvl = strlen(argv);
         char* argn_buf = malloc(argnl + 1);
         if (argn_buf == NULL) {
+            config_free(cfg);
             return -1;
         }
         char* argv_buf = malloc(argvl + 1);
         if (argv_buf == NULL) {
+            config_free(cfg);
             free(argn_buf);
             return -1;
         }
