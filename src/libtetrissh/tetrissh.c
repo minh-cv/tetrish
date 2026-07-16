@@ -234,6 +234,7 @@ unsigned char* tetrish_recv_frame(int fd, uint32_t* plaintext_length, SessionKey
     }
 
     if (key == NULL) {
+        *plaintext_length = encrypted_length;
         return encrypted_msg;
     }
 
