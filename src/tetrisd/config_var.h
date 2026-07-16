@@ -3,7 +3,7 @@
 
 struct config_var {
     int port;
-    const char* address;
+    char* address;
     char* cert_path;
     char* key_path;
     int max_events;
