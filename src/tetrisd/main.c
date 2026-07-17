@@ -235,6 +235,7 @@ int main() {
 
                     if ((add_client(&clients[client_fd], epoll_fd, client_fd, &credential)) == -1) {
                         perror("add_client");
+                        close(client_fd);
                         continue;
                     }
                     printf("accepted client fd=%d\n", client_fd);
