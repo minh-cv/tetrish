@@ -9,8 +9,9 @@ add_library(libtetrisbrain src/libtetrisbrain/tetrisbrain.c)
 target_include_directories(libtetrisbrain PUBLIC include)
 
 add_executable(tetrisctl src/tetrisctl/main.c)
-add_executable(tetrisd src/tetrisd/main.c src/tetrisd/client.c src/tetrisd/state.c src/tetrisd/epollmanip.c src/tetrisd/config_var.c)
+add_executable(tetrisd src/tetrisd/main.c src/tetrisd/tetris_client.c src/tetrisd/epollmanip.c src/tetrisd/config_var.c)
 target_include_directories(tetrisd PRIVATE src/tetrisd)
+target_link_libraries(tetrisd PRIVATE server)
 
 add_executable(tetrislogd src/tetrislogd/main.c)
 add_executable(tetrisu src/tetrisu/main.c
