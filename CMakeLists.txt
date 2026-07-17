@@ -27,7 +27,11 @@ target_compile_definitions(tetrisd PRIVATE
     $<$<BOOL:${TETRISH_TETRISD_NO_DAEMON}>:TETRISH_TETRISD_NO_DAEMON>
 )
 
-add_executable(tetrislogd src/tetrislogd/main.c)
+add_executable(tetrislogd src/tetrislogd/main.c
+    src/tetrislogd/config_var.c)
+target_include_directories(tetrislogd PRIVATE include src/tetrislogd)
+target_link_libraries(tetrislogd PRIVATE config libtetrissh)
+
 add_executable(tetrisu src/tetrisu/main.c
     src/tetrisu/config_var.c)
 target_include_directories(tetrisu PRIVATE src/tetrisu)
