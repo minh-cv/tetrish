@@ -1,0 +1,3 @@
+[submodule "external/corestack"]
+	path = external/corestack
+	url = https://github.com/minh-cv/corestack.git

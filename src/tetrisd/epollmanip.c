@@ -1,199 +1,117 @@
 #include "epollmanip.h"
-#include "client.h"
-#include "state.h"
+#include "client_auth.h"
+#include "client_io.h"
+#include "tetris_client.h"
 #include "tetrissh.h"
+
 #include <assert.h>
-#include <sched.h>
+#include <stdbool.h>
+#include <stddef.h>
+#include <stdio.h>
 #include <sys/epoll.h>
+#include <unistd.h>
 
-static int mod_epoll_events(int epoll_fd, int fd, uint32_t events) {
-    struct epoll_event ev = {0};
-    ev.events = events;
-    ev.data.fd = fd;
-    return epoll_ctl(epoll_fd, EPOLL_CTL_MOD, fd, &ev);
-}
-
-void close_client(int epoll_fd, struct client *c) {
-    assert(c != NULL);
-
-    epoll_ctl(epoll_fd, EPOLL_CTL_DEL, c->fd, NULL);
-
-    client_pop_frame(c, c->frame_count);
-
-    close(c->fd);
-    free(c);
-}
-
-struct client* add_client(int epoll_fd, int client_fd) {
-    struct client *c = calloc(1, sizeof(*c));
-    if (!c) {
+static ClientIo* get_client_io(Client* c) {
+    switch (c->tag) {
+    case CLIENT_TAG_UNAUTHED:
+        return &c->client_unauthed.base;
+    case CLIENT_TAG_TETRIS:
+        return &c->tetris_client.base;
+    case CLIENT_TAG_INACTIVE:
+    default:
+        assert(false);
         return NULL;
     }
+}
 
-    c->fd = client_fd;
-    client_transit_state(c, CLIENT_AUTH_NONCE, CLIENT_READING_LEN, 1);
+static void client_free(Client* c) {
+    switch (c->tag) {
+    case CLIENT_TAG_UNAUTHED:
+        client_unauthed_free(&c->client_unauthed);
+        return;
+    case CLIENT_TAG_TETRIS:
+        tetris_client_free(&c->tetris_client);
+        return;
+    case CLIENT_TAG_INACTIVE:
+        assert(false);
+        return;
+    default:
+        assert(false);
+        return;
+    }
+}
+
+int add_client(Client* client, int epoll_fd, int client_fd, TetrishCredential* credential) {
+    client->tag = CLIENT_TAG_UNAUTHED;
+    client_unauthed_init(&client->client_unauthed, client_fd, credential);
 
     struct epoll_event ev = {0};
     ev.events = EPOLLIN | EPOLLRDHUP;
     ev.data.fd = client_fd;
 
     if (epoll_ctl(epoll_fd, EPOLL_CTL_ADD, client_fd, &ev) == -1) {
-        free(c);
-        return NULL;
-    }
-
-    return c;
-}
-
-int handle_read(int epoll_fd, struct client *c, TetrishCredential* credential) {
-    assert(c->frame_active != 0);
-    
-    for (;;) {
-        if (c->state == CLIENT_READING_LEN) {
-            struct frame actual_frame = {0};
-            struct frame *f = &actual_frame;
-
-            ssize_t n = recv(c->fd,
-                             f->len_buf + f->len_used,
-                             sizeof(f->len_buf) - f->len_used,
-                             0);
-
-            if (n == 0) {
-                return -1;
-            }
-            if (n == -1) {
-                if (errno == EAGAIN || errno == EWOULDBLOCK) {
-                    return 0;
-                }
-                if (errno == EINTR) {
-                    continue;
-                }
-                return -1;
-            }
-
-            f->len_used += (uint32_t)n;
-
-            if (f->len_used < sizeof(f->len_buf)) {
-                return 0;
-            }
-
-            f->len = decode_u32_be(f->len_buf);
-
-            if (f->len == 0 || f->len > FRAME_MAX) {
-                fprintf(stderr, "invalid message length from fd %d: %u\n",
-                        c->fd, f->len);
-                return -1;
-            }
-            
-            f->buf = malloc(f->len);
-            if (f->buf == NULL) {
-                return -1;
-            }
-
-            f->is_heap_allocated = true;
-            client_push_frame(c, f, 1);
-            c->state = CLIENT_READING_BODY;
-        }
-
-        if (c->state == CLIENT_READING_BODY) {
-            struct frame* f = client_get_top_frame(c);
-            ssize_t n = recv(c->fd,
-                             f->buf + f->used,
-                             f->len - f->used,
-                             0);
-
-            if (n == 0) {
-                return -1;
-            }
-            if (n == -1) {
-                if (errno == EAGAIN || errno == EWOULDBLOCK) {
-                    return 0;
-                }
-                if (errno == EINTR) {
-                    continue;
-                }
-                return -1;
-            }
-
-            f->used += (uint32_t)n;
-
-            if (f->used < f->len) {
-                return 0;
-            }
-
-            c->frame_active--;
-            if (0 != c->frame_active) {
-                c->state = CLIENT_READING_LEN;
-                return 0;
-            }
-
-            if (transit_read(c, credential) == -1) {
-                return -1;
-            }
-
-            if (c->state == CLIENT_WRITING) {
-                if (mod_epoll_events(epoll_fd, c->fd, EPOLLOUT | EPOLLRDHUP) == -1) {
-                    return -1;
-                }
-            }
-            
-            return 0;
-        }
-
-        return 0;
-    }
-}
-
-int handle_write(int epoll_fd, struct client *c) {
-    while (c->frame_active > 0) {
-        struct frame *f = client_get_top_frame(c);
-
-        while (f->len_used < sizeof(f->len_buf)) {
-            ssize_t n = send(c->fd,
-                             f->len_buf + f->len_used,
-                             sizeof(f->len_buf) - f->len_used,
-                             0);
-
-            if (n == -1) {
-                if (errno == EAGAIN || errno == EWOULDBLOCK) {
-                    return 0;
-                }
-                if (errno == EINTR) {
-                    continue;
-                }
-                return -1;
-            }
-
-            f->len_used += (uint32_t)n;
-        }
-
-        while (f->used < f->len) {
-            ssize_t n = send(c->fd,
-                             f->buf + f->used,
-                             f->len - f->used,
-                             0);
-
-            if (n == -1) {
-                if (errno == EAGAIN || errno == EWOULDBLOCK) {
-                    return 0;
-                }
-                if (errno == EINTR) {
-                    continue;
-                }
-                return -1;
-            }
-
-            f->used += (uint32_t)n;
-        }
-        client_pop_frame(c, 1);
-        c->frame_active--;
-    }
-
-    client_transit_state(c, c->auth_state, CLIENT_READING_LEN, 1);
-
-    if (mod_epoll_events(epoll_fd, c->fd, EPOLLIN | EPOLLRDHUP) == -1) {
+        client->tag = CLIENT_TAG_INACTIVE;
         return -1;
     }
 
     return 0;
+}
+
+enum ClientIoResult client_generic_entry(int epoll_fd, Client* client) {
+    switch (client->tag) {
+    case CLIENT_TAG_UNAUTHED:
+        return client_io_generic_entry(epoll_fd, get_client_io(client), client_unauthed_transist_read, client_unauthed_transit_write);
+    case CLIENT_TAG_TETRIS:
+        return client_io_generic_entry(epoll_fd, get_client_io(client), tetris_client_transist_read, tetris_client_transist_write);
+    case CLIENT_TAG_INACTIVE:
+        assert(false);
+        return CLIENT_IO_ERR;
+    default:
+        assert(false);
+        return CLIENT_IO_ERR;
+    }
+}
+
+void close_client(int epoll_fd, Client* c) {
+    epoll_ctl(epoll_fd, EPOLL_CTL_DEL, get_client_io(c)->fd, NULL);
+    close(get_client_io(c)->fd);
+    client_free(c);
+    c->tag = CLIENT_TAG_INACTIVE;
+}
+
+int handle_client_event(int epoll_fd, Client* c) {
+    for (;;) {
+        ClientIo* c_io = get_client_io(c);
+        ClientIoResult r = client_generic_entry(epoll_fd, c);
+
+        switch (r) {
+            case CLIENT_IO_CONTINUE:
+                continue;
+            case CLIENT_IO_OK:
+                return 0;
+            case CLIENT_IO_ERR:
+                printf("client event failure, closing client fd=%d\n", c_io->fd);
+                close_client(epoll_fd, c);
+                return -1;
+            case CLIENT_IO_CLOSE: {
+                printf("closing client fd=%d\n", c_io->fd);
+                close_client(epoll_fd, c);
+                return 0;
+            }
+            case CLIENT_IO_YIELD: {
+                switch (c->tag) {
+                case CLIENT_TAG_UNAUTHED:
+                ;
+                ClientUnauthed old = c->client_unauthed;
+                tetris_client_init(&c->tetris_client, old.base.fd, &old.key);
+                c->tag = CLIENT_TAG_TETRIS;
+
+                continue;
+                default:
+                    assert(false);
+                    return -1;
+                }
+            }
+        }
+    }
 }

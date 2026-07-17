@@ -3,7 +3,7 @@
 
 struct config_var {
     int port;
-    const char* address;
+    char* address;
     char* ca_path;
 };
 int config_var_init(struct config_var* cfg_var);

@@ -3,7 +3,6 @@
 #include "dtor.h"
 #include "epollmanip.h"
 #include "tetrissh.h"
-#include "client.h"
 
 #include <arpa/inet.h>
 #include <assert.h>
@@ -128,6 +127,7 @@ int main() {
         DTOR_RETURN(dtor, 1);
     }
 
+#ifndef TETRISH_TETRISD_NO_DAEMON
     switch (incantation()) {
     case 0:
         DTOR_RETURN(dtor, 0);
@@ -139,6 +139,7 @@ int main() {
     default:
         assert(false);
     }
+#endif
 
     struct config_var cfg;
     if (config_var_init(&cfg) == -1) {
@@ -177,7 +178,7 @@ int main() {
 
     printf("server listening on port %d\n", cfg.port);
 
-    struct client **clients = calloc((size_t)cfg.max_clients, sizeof(*clients));
+    struct Client *clients = calloc((size_t)cfg.max_clients, sizeof(*clients));
     if (clients == NULL) {
         fprintf(stderr, "clients NULL\n");
         DTOR_RETURN(dtor, -1);
@@ -232,9 +233,8 @@ int main() {
                         continue;
                     }
 
-                    if ((clients[client_fd] = add_client(epoll_fd, client_fd)) == NULL) {
+                    if ((add_client(&clients[client_fd], epoll_fd, client_fd, &credential)) == -1) {
                         perror("add_client");
-                        close(client_fd);
                         continue;
                     }
                     printf("accepted client fd=%d\n", client_fd);
@@ -242,42 +242,31 @@ int main() {
                 continue;
             }
 
-            if (fd < 0 || fd >= cfg.max_clients || clients[fd] == NULL) {
+            if (fd >= cfg.max_clients) {
+                // TODO: logging
                 continue;
             }
-
-            struct client *c = clients[fd];
+            if (fd < 0 || clients[fd].tag == CLIENT_TAG_INACTIVE) {
+                assert(false);
+                continue;
+            }
 
             if (evs & (EPOLLERR | EPOLLHUP | EPOLLRDHUP)) {
                 printf("closing client fd=%d\n", fd);
-                close_client(epoll_fd, c);
-                clients[fd] = NULL;
+                close_client(epoll_fd, &clients[fd]);
                 continue;
             }
 
-            if ((evs & EPOLLIN) && c->state != CLIENT_WRITING) {
-                if (handle_read(epoll_fd, c, &credential) == -1) {
-                    printf("read failure, closing client fd=%d\n", fd);
-                    close_client(epoll_fd, c);
-                    clients[fd] = NULL;
-                    continue;
-                }
-            }
-
-            if ((evs & EPOLLOUT) && c->state == CLIENT_WRITING) {
-                if (handle_write(epoll_fd, c) == -1) {
-                    printf("write failure, closing client fd=%d\n", fd);
-                    close_client(epoll_fd, c);
-                    clients[fd] = NULL;
-                    continue;
-                }
+            if (evs & (EPOLLIN | EPOLLOUT)) {
+                handle_client_event(epoll_fd, &clients[fd]);
+                continue;
             }
         }
     }
 
     for (int fd = 0; fd < cfg.max_clients; fd++) {
-        if (clients[fd]) {
-            close_client(epoll_fd, clients[fd]);
+        if (clients[fd].tag != CLIENT_TAG_INACTIVE) {
+            close_client(epoll_fd, &clients[fd]);
         }
     }
 
