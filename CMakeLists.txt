@@ -3,19 +3,10 @@ project(tetrish LANGUAGES C)
 
 add_compile_options(-g -Wall -Wextra -Wpedantic -Wconversion -Wno-strict-prototypes)
 
-add_library(libhtttp src/libhtttp/htttp.c)
-target_include_directories(libhtttp PUBLIC include)
-
-add_library(libtetrissh src/libtetrissh/tetrissh.c)
-target_include_directories(libtetrissh PUBLIC include)
-target_link_libraries(libtetrissh PUBLIC common)
+add_subdirectory(external/corestack)
 
 add_library(libtetrisbrain src/libtetrisbrain/tetrisbrain.c)
 target_include_directories(libtetrisbrain PUBLIC include)
-
-add_library(common src/common/common.c)
-target_include_directories(common PUBLIC include)
-target_link_libraries(common PUBLIC crypto)
 
 add_executable(tetrisctl src/tetrisctl/main.c)
 add_executable(tetrisd src/tetrisd/main.c src/tetrisd/client.c src/tetrisd/state.c src/tetrisd/epollmanip.c src/tetrisd/config_var.c)
@@ -28,7 +19,7 @@ target_include_directories(tetrisu PRIVATE src/tetrisu)
 
 foreach(target tetrisd tetrisu)
     target_include_directories(${target} PRIVATE include)
-    target_link_libraries(${target} PRIVATE libhtttp common libtetrissh config)
+    target_link_libraries(${target} PRIVATE htttp common tetrissh config)
 endforeach()
 
 add_library(perms src/tetrish/libs/perms.c)
@@ -58,13 +49,8 @@ target_include_directories(sys PRIVATE src/tetrish)
 add_executable(hash src/tetrish/system_programs/hash.c)
 set_target_properties(hash PROPERTIES OUTPUT_NAME "#")
 
-add_library(config src/config/config.c)
-target_include_directories(config PRIVATE include)
-
 install(
     TARGETS
-        libhtttp
-        libtetrissh
         libtetrisbrain
         tetrisctl
         tetrisd
