@@ -1,6 +1,9 @@
 cmake_minimum_required(VERSION 3.10)
 project(tetrish LANGUAGES C)
 
+option(TETRISH_DEV_MODE "Enable dev-mode macros" OFF)
+option(TETRISH_TETRISD_NO_DAEMON "Disable daemonization of tetrisd" ${TETRISH_DEV_MODE})
+
 add_compile_options(-g -Wall -Wextra -Wpedantic -Wconversion -Wno-strict-prototypes)
 
 add_subdirectory(external/corestack)
@@ -9,11 +12,18 @@ add_library(libtetrisbrain src/libtetrisbrain/tetrisbrain.c)
 target_include_directories(libtetrisbrain PUBLIC include)
 
 add_executable(tetrisctl src/tetrisctl/main.c)
-add_executable(tetrisd src/tetrisd/main.c src/tetrisd/tetris_client.c src/tetrisd/epollmanip.c src/tetrisd/config_var.c)
+add_executable(tetrisd src/tetrisd/main.c src/tetrisd/tetris_client.c src/tetrisd/epollmanip.c src/tetrisd/config_var.c src/tetrisd/daemon.c)
 target_include_directories(tetrisd PRIVATE src/tetrisd)
 target_link_libraries(tetrisd PRIVATE server)
+target_compile_definitions(tetrisd PRIVATE
+    $<$<BOOL:${TETRISH_TETRISD_NO_DAEMON}>:TETRISH_TETRISD_NO_DAEMON>
+)
 
-add_executable(tetrislogd src/tetrislogd/main.c)
+add_executable(tetrislogd src/tetrislogd/main.c
+    src/tetrislogd/config_var.c)
+target_include_directories(tetrislogd PRIVATE include src/tetrislogd)
+target_link_libraries(tetrislogd PRIVATE config tetrissh)
+
 add_executable(tetrisu src/tetrisu/main.c
     src/tetrisu/config_var.c)
 target_include_directories(tetrisu PRIVATE src/tetrisu)
