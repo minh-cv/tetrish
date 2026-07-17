@@ -127,6 +127,7 @@ int main() {
         DTOR_RETURN(dtor, 1);
     }
 
+#ifndef TETRISH_TETRISD_NO_DAEMON
     switch (incantation()) {
     case 0:
         DTOR_RETURN(dtor, 0);
@@ -138,6 +139,7 @@ int main() {
     default:
         assert(false);
     }
+#endif
 
     struct config_var cfg;
     if (config_var_init(&cfg) == -1) {
