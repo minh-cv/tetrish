@@ -61,8 +61,8 @@ int config_var_init(struct config_var* cfg_var) {
         }
         memcpy(address, ADDRESS_DEFAULT, address_default_len);
         address[address_default_len] = '\0';
-        DTOR_INSERT(errdtor, free, address);
     }
+    DTOR_INSERT(errdtor, free, address);
 
     char* cert_path = config_get_path(&config, "cert_path", project_dir);
     if (cert_path == NULL) {
