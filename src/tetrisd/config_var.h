@@ -8,6 +8,7 @@ struct config_var {
     char* key_path;
     int max_events;
     int max_clients;
+    char* log_ipc;
 };
 int config_var_init(struct config_var* cfg_var);
 void config_var_free(struct config_var* cfg);

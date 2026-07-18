@@ -8,6 +8,10 @@
 //! ClientUnauthed is promoted to once the handshake completes (CLIENT_IO_YIELD).
 typedef struct TetrisClient {
     struct ClientIo base;
+    enum {
+        TETRIS_CLIENT_START,
+        TETRIS_CLIENT_ACTIVE,
+    } state;
     SessionKey session_key;
 } TetrisClient;
 
@@ -15,7 +19,7 @@ typedef struct TetrisClient {
 //! fd and session key. Does not touch epoll registration - the fd stays registered as-is.
 void tetris_client_init(TetrisClient* c, int client_fd, SessionKey* key);
 void tetris_client_free(TetrisClient* c);
-ClientIoResult tetris_client_transist_write(int epoll_fd, struct ClientIo* c_base);
-ClientIoResult tetris_client_transist_read(int epoll_fd, struct ClientIo* c_base);
+ClientIoResult tetris_client_transist_write(struct ClientIo* c_base);
+ClientIoResult tetris_client_transist_read(struct ClientIo* c_base);
 
 #endif

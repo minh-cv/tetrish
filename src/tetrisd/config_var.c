@@ -98,6 +98,13 @@ int config_var_init(struct config_var* cfg_var) {
     }
     const int MAX_CLIENTS = (int)max_clients_long;
 
+    char* log_ipc = config_get_path(&config, "log_ipc", project_dir);
+    if (log_ipc == NULL) {
+        fputs("log_ipc invalid\n", stderr);
+        DTOR_ERR_RETURN(errdtor, dtor, -1);
+    }
+    DTOR_INSERT(errdtor, free, log_ipc);
+
     struct config_var new_cfg = {
         (int)listen_port_long,
         address,
@@ -105,6 +112,7 @@ int config_var_init(struct config_var* cfg_var) {
         key_path,
         MAX_EVENTS,
         MAX_CLIENTS,
+        log_ipc,
     };
 
     *cfg_var = new_cfg;
@@ -116,4 +124,5 @@ void config_var_free(struct config_var* cfg) {
     free(cfg->cert_path);
     free(cfg->key_path);
     free(cfg->address);
+    free(cfg->log_ipc);
 }

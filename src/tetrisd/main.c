@@ -1,7 +1,10 @@
 #include "config_var.h"
+#ifndef TETRISH_TETRISD_NO_DAEMON
 #include "daemon.h"
+#endif
 #include "dtor.h"
 #include "epollmanip.h"
+#include "logger.h"
 #include "tetrissh.h"
 
 #include <arpa/inet.h>
@@ -71,7 +74,7 @@ static int prepare_socket(const char* address, int port) {
     struct addrinfo* res;
     int rc = getaddrinfo(address, port_str, &hints, &res);
     if (rc != 0) {
-        fprintf(stderr, "getaddrinfo: %s\n", gai_strerror(rc));
+        LOGGER_LOG(LOG_ERROR, "socket", "getaddrinfo: %s", gai_strerror(rc));
         DTOR_RETURN(dtor, -1);
     }
     DTOR_INSERT(dtor, freeaddrinfo, res);
@@ -80,28 +83,28 @@ static int prepare_socket(const char* address, int port) {
         int listen_fd = socket(p->ai_family, p->ai_socktype, p->ai_protocol);
 
         if (listen_fd == -1) {
-            perror("socket");
+            LOGGER_PERROR("socket", "socket");
             continue;
         }
 
         int opt = 1;
         if (setsockopt(listen_fd, SOL_SOCKET, SO_REUSEADDR, &opt, sizeof(opt)) == -1) {
-            perror("setsockopt");
+            LOGGER_PERROR("socket", "setsockopt");
             close(listen_fd); continue;
         }
 
         if (set_nonblocking(listen_fd) == -1) {
-            perror("set_nonblocking listen_fd");
+            LOGGER_PERROR("socket", "set_nonblocking listen_fd");
             close(listen_fd); continue;
         }
 
         if (bind(listen_fd, p->ai_addr, p->ai_addrlen) == -1) {
-            perror("bind");
+            LOGGER_PERROR("socket", "bind");
             close(listen_fd); continue;
         }
 
         if (listen(listen_fd, SOMAXCONN) == -1) {
-            perror("listen");
+            LOGGER_PERROR("socket", "listen");
             close(listen_fd); continue;
         }
 
@@ -109,13 +112,13 @@ static int prepare_socket(const char* address, int port) {
 
     }
 
-    fprintf(stderr, "cannot make socket\n");
+    LOGGER_LOG(LOG_ERROR, "socket", "cannot make socket");
     DTOR_RETURN(dtor, -1);
 }
 
 int main() {
     DTOR_DEFINE(dtor, 20);
-    
+
     struct sigaction sa = {0};
     sa.sa_handler = handle_signal;
     sigemptyset(&sa.sa_mask);
@@ -126,43 +129,43 @@ int main() {
         perror("sigaction");
         DTOR_RETURN(dtor, 1);
     }
-
-#ifndef TETRISH_TETRISD_NO_DAEMON
-    switch (incantation()) {
-    case 0:
-        DTOR_RETURN(dtor, 0);
-    case -1:
-        perror("incantation");
-        DTOR_RETURN(dtor, 1);
-    case 1:
-        break;
-    default:
-        assert(false);
-    }
-#endif
-
+    
     struct config_var cfg;
     if (config_var_init(&cfg) == -1) {
         DTOR_RETURN(dtor, -1);
     }
     DTOR_INSERT(dtor, config_var_free, &cfg);
-
+    
     TetrishCredential credential;
     if (tetrish_credential_init(&credential, cfg.key_path, cfg.cert_path) == -1) {
         perror("credential init");
         DTOR_RETURN(dtor, 1);
     }
     DTOR_INSERT(dtor, tetrish_credential_free, &credential);
+    
+    #ifndef TETRISH_TETRISD_NO_DAEMON
+        switch (incantation()) {
+        case 0:
+            DTOR_RETURN(dtor, 0);
+        case -1:
+            perror("incantation");
+            DTOR_RETURN(dtor, 1);
+        case 1:
+            break;
+        default:
+            assert(false);
+        }
+    #endif
 
     int listen_fd = prepare_socket(cfg.address, cfg.port);
     if (listen_fd == -1) {
-        return 1;
+        DTOR_RETURN(dtor, 1);
     }
     DTOR_INSERT(dtor, close_ptr, &listen_fd);
 
     int epoll_fd = epoll_create1(0);
     if (epoll_fd == -1) {
-        perror("epoll_create1");
+        LOGGER_PERROR("epoll", "epoll_create1");
         DTOR_RETURN(dtor, 1);
     }
     DTOR_INSERT(dtor, close_ptr, &epoll_fd);
@@ -172,22 +175,22 @@ int main() {
     listen_ev.data.fd = listen_fd;
 
     if (epoll_ctl(epoll_fd, EPOLL_CTL_ADD, listen_fd, &listen_ev) == -1) {
-        perror("epoll_ctl listen_fd");
+        LOGGER_PERROR("epoll", "epoll_ctl listen_fd");
         DTOR_RETURN(dtor, 1);
     }
 
-    printf("server listening on port %d\n", cfg.port);
+    LOGGER_LOG(LOG_INFO, "main", "server listening on port %d", cfg.port);
 
     struct Client *clients = calloc((size_t)cfg.max_clients, sizeof(*clients));
     if (clients == NULL) {
-        fprintf(stderr, "clients NULL\n");
+        LOGGER_LOG(LOG_ERROR, "main", "clients NULL");
         DTOR_RETURN(dtor, -1);
     }
     DTOR_INSERT(dtor, free, clients);
 
     struct epoll_event* events = calloc((size_t)cfg.max_events, sizeof(*events));
     if (events == NULL) {
-        fprintf(stderr, "events NULL\n");
+        LOGGER_LOG(LOG_ERROR, "main", "events NULL");
         DTOR_RETURN(dtor, -1);
     }
     DTOR_INSERT(dtor, free, events);
@@ -198,7 +201,7 @@ int main() {
             if (errno == EINTR) {
                 continue;
             }
-            perror("epoll_wait");
+            LOGGER_PERROR("main", "epoll_wait");
             break;
         }
 
@@ -216,29 +219,32 @@ int main() {
                         if (errno == EINTR) {
                             continue;
                         }
-                        perror("accept");
+                        LOGGER_PERROR("accept", "accept");
                         break;
                     }
 
                     if (client_fd >= cfg.max_clients) {
                         errno = EMFILE;
-                        perror("client_fd too large");
+                        LOGGER_PERROR("accept", "client_fd too large");
                         close(client_fd);
                         continue;
                     }
 
                     if (set_nonblocking(client_fd) == -1) {
-                        perror("set_nonblocking");
+                        LOGGER_PERROR("accept", "set_nonblocking");
                         close(client_fd);
                         continue;
                     }
 
                     if ((add_client(&clients[client_fd], epoll_fd, client_fd, &credential)) == -1) {
-                        perror("add_client");
+                        LOGGER_PERROR("accept", "add_client");
                         close(client_fd);
                         continue;
                     }
-                    printf("accepted client fd=%d\n", client_fd);
+
+                    if (handle_client_event(epoll_fd, &clients[client_fd]) != -1) {
+                        LOGGER_LOG(LOG_INFO, "accept", "accepted client fd=%d", client_fd);
+                    }
                 }
                 continue;
             }
@@ -253,7 +259,7 @@ int main() {
             }
 
             if (evs & (EPOLLERR | EPOLLHUP | EPOLLRDHUP)) {
-                printf("closing client fd=%d\n", fd);
+                LOGGER_LOG(LOG_INFO, "client", "closing client fd=%d", fd);
                 close_client(epoll_fd, &clients[fd]);
                 continue;
             }

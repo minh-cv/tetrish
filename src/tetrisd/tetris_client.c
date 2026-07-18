@@ -2,6 +2,7 @@
 #include "client_io.h"
 #include "dtor.h"
 #include "htttp.h"
+#include "logger.h"
 #include "tetrissh.h"
 
 #include <assert.h>
@@ -9,12 +10,11 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
-#include <sys/epoll.h>
 
 static DTOR_WRAPPER_DEFINE(htttp_message_free)
 static DTOR_WRAPPER_DEFINE(free)
 
-static TetrisClient* upcast(struct ClientIo* c_base) {
+static TetrisClient* downcast(struct ClientIo* c_base) {
     size_t diff = offsetof(TetrisClient, base);
     return (TetrisClient*)((char*)c_base - diff);
 }
@@ -25,20 +25,25 @@ static int print_client_message(TetrisClient* c) {
     unsigned char* buf = tetrish_session_decrypt(&c->session_key, f->buf, f->len, &out_len);
 
     if (buf == NULL) {
-        fprintf(stderr, "cannot print message from client %d\n", c->base.fd);
+        LOGGER_LOG(LOG_ERROR, "client", "cannot print message from client %d", c->base.fd);
         return -1;
     }
 
-    printf("client %d sent: %.*s\n", c->base.fd, (int)out_len, buf);
-    fflush(stdout);
+    LOGGER_LOG(LOG_INFO, "client", "client %d sent: %.*s", c->base.fd, (int)out_len, buf);
     free(buf);
     return 0;
 }
 
 // game logic is not implemented yet - this just echoes a fixed 200 OK, same as the
 // pre-refactor tetrisd/state.c did.
-ClientIoResult tetris_client_transist_read(int epoll_fd, struct ClientIo* c_base) {
-    TetrisClient* c = upcast(c_base);
+ClientIoResult tetris_client_transist_read(struct ClientIo* c_base) {
+    TetrisClient* c = downcast(c_base);
+
+    if (c->state == TETRIS_CLIENT_START) {
+        c->state = TETRIS_CLIENT_ACTIVE;
+        client_io_transit_state(c_base, CLIENT_READING_LEN, 1);
+        return CLIENT_IO_CONTINUE;
+    }
 
     if (print_client_message(c) == -1) {
         return CLIENT_IO_ERR;
@@ -56,7 +61,7 @@ ClientIoResult tetris_client_transist_read(int epoll_fd, struct ClientIo* c_base
     unsigned char* buffer;
     size_t length;
     if (htttp_serialize(&message, &buffer, &length) == -1) {
-        perror("serialize");
+        LOGGER_PERROR("client", "serialize");
         DTOR_RETURN(dtor, CLIENT_IO_ERR);
     }
     DTOR_INSERT(dtor, free, buffer);
@@ -68,7 +73,7 @@ ClientIoResult tetris_client_transist_read(int epoll_fd, struct ClientIo* c_base
     }
 
     if (out_len > FRAME_MAX) {
-        fprintf(stderr, "message too long\n");
+        LOGGER_LOG(LOG_ERROR, "client", "message too long");
         free(out_buffer);
         DTOR_RETURN(dtor, CLIENT_IO_ERR);
     }
@@ -81,27 +86,20 @@ ClientIoResult tetris_client_transist_read(int epoll_fd, struct ClientIo* c_base
     client_io_push_frame(c_base, &frame, 1);
     client_io_transit_state(c_base, CLIENT_WRITING, 1);
 
-    if (mod_epoll_events(epoll_fd, c_base->fd, EPOLLOUT | EPOLLRDHUP) == -1) {
-        DTOR_RETURN(dtor, CLIENT_IO_ERR);
-    }
-
-    DTOR_RETURN(dtor, CLIENT_IO_OK);
+    DTOR_RETURN(dtor, CLIENT_IO_CONTINUE);
 }
 
-ClientIoResult tetris_client_transist_write(int epoll_fd, struct ClientIo* c_base) {
+ClientIoResult tetris_client_transist_write(struct ClientIo* c_base) {
     client_io_transit_state(c_base, CLIENT_READING_LEN, 1);
 
-    if (mod_epoll_events(epoll_fd, c_base->fd, EPOLLIN | EPOLLRDHUP) == -1) {
-        return CLIENT_IO_ERR;
-    }
-
-    return CLIENT_IO_OK;
+    return CLIENT_IO_CONTINUE;
 }
 
 void tetris_client_init(TetrisClient* c, int client_fd, SessionKey* key) {
     client_io_init(&c->base, client_fd);
     memcpy(c->session_key, key, sizeof(c->session_key));
-    client_io_transit_state(&c->base, CLIENT_READING_LEN, 1);
+    client_io_transit_state(&c->base, CLIENT_READ_TRANSIT, 0);
+    c->state = TETRIS_CLIENT_START;
 }
 
 void tetris_client_free(TetrisClient* c) {
