@@ -82,11 +82,15 @@ static int close_ptr(const int* fd) {
     return close(*fd);
 }
 
+static void free_ptr(void** ptr) {
+    free(*ptr);
+}
+
 static DTOR_WRAPPER_DEFINE(close_ptr)
 static DTOR_WRAPPER_DEFINE(config_var_free)
-static DTOR_WRAPPER_DEFINE(free)
 static DTOR_WRAPPER_DEFINE(freeaddrinfo)
 static DTOR_WRAPPER_DEFINE(log_buf_free)
+static DTOR_WRAPPER_DEFINE(free_ptr)
 
 static int prepare_socket(const char* address, int port) {
     DTOR_DEFINE(dtor, 10);
@@ -186,7 +190,10 @@ static const int LOGGER_RECONNECT_BACKOFF_SEC = 5;
 
 static int reconnect_client_logger(int epoll_fd, const char* log_ipc, int max_clients, Client* clients, LogBuf* log_buf) {
     int client_logger_fd = prepare_logger_socket(log_ipc);
-    if (client_logger_fd == -1 || client_logger_fd >= max_clients) {
+    if (client_logger_fd == -1) {
+        return -1;
+    }
+    if (client_logger_fd >= max_clients) {
         close(client_logger_fd);
         return -1;
     }
@@ -309,7 +316,7 @@ int main() {
         LOGGER_LOG(LOG_ERROR, "main", "clients NULL");
         DTOR_RETURN(dtor, -1);
     }
-    DTOR_INSERT(dtor, free, clients);
+    DTOR_INSERT(dtor, free_ptr, &clients);
 
     time_t logger_last_attempt = time(NULL);
     int client_logger_fd = reconnect_client_logger(epoll_fd, cfg.log_ipc, cfg.max_clients, clients, &logger_ctx.log_buf);
@@ -319,7 +326,7 @@ int main() {
         LOGGER_LOG(LOG_ERROR, "main", "events NULL");
         DTOR_RETURN(dtor, -1);
     }
-    DTOR_INSERT(dtor, free, events);
+    DTOR_INSERT(dtor, free_ptr, &events);
     
     while (running) {
         int n = epoll_wait(epoll_fd, events, cfg.max_events, -1);
@@ -486,7 +493,6 @@ int main() {
         ClientIoResult result = resume_client_event(epoll_fd, &clients[client_logger_fd]);
         if (result == CLIENT_IO_ERR) {
             LOGGER_LOG(LOG_INFO, "logger", "closing logger fd=%d", client_logger_fd);
-            client_logger_fd = -1;
         }
         if (logger_ctx.log_buf.buffer_size == 0) {
             logger_ctx.has_log = false;
