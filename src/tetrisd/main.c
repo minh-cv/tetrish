@@ -227,6 +227,7 @@ static void main_yield_handler(int epoll_fd, Client* c) {
         ClientUnauthed old = c->client_unauthed;
         tetris_client_init(&c->tetris_client, old.base.fd, &old.key);
         c->tag = CLIENT_TAG_TETRIS;
+        client_unauthed_free(&old);
         ClientIoResult result = resume_client_event(epoll_fd, c);
         if (result == CLIENT_IO_YIELD) { 
             main_yield_handler(epoll_fd, c);
