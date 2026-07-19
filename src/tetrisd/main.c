@@ -240,6 +240,20 @@ static void main_yield_handler(int epoll_fd, Client* c) {
 
 int main() {
     DTOR_DEFINE(dtor, 20);
+    
+    #ifndef TETRISH_TETRISD_NO_DAEMON
+        switch (incantation()) {
+        case 0:
+            DTOR_RETURN(dtor, 0);
+        case -1:
+            perror("incantation");
+            DTOR_RETURN(dtor, 1);
+        case 1:
+            break;
+        default:
+            assert(false);
+        }
+    #endif
 
     logger_set_log_handler(logger_log_null);
 
@@ -271,21 +285,7 @@ int main() {
         LOGGER_PERROR("auth", "credential init");
         DTOR_RETURN(dtor, 1);
     }
-    DTOR_INSERT(dtor, tetrish_credential_free, &credential);
-    
-    #ifndef TETRISH_TETRISD_NO_DAEMON
-        switch (incantation()) {
-        case 0:
-            DTOR_RETURN(dtor, 0);
-        case -1:
-            perror("incantation");
-            DTOR_RETURN(dtor, 1);
-        case 1:
-            break;
-        default:
-            assert(false);
-        }
-    #endif
+    DTOR_INSERT(dtor, tetrish_credential_free, &credential);  
 
     int listen_fd = prepare_socket(cfg.address, cfg.port);
     if (listen_fd == -1) {
