@@ -82,7 +82,7 @@ int config_var_init(struct config_var* cfg_var) {
     if (config_get_long_arg(&config, "max_events", &max_events_long) == -1) {
         max_events_long = MAX_EVENTS_DEFAULT;
     }
-    if (max_events_long > INT_MAX) {
+    if (max_events_long <= 0 || max_events_long > INT_MAX) {
         fprintf(stderr, "max_events invalid\n");
         DTOR_ERR_RETURN(errdtor, dtor, -1);
     }
@@ -92,7 +92,7 @@ int config_var_init(struct config_var* cfg_var) {
     if (config_get_long_arg(&config, "max_clients", &max_clients_long) == -1) {
         max_clients_long = MAX_CLIENTS_DEFAULT;
     }
-    if (max_clients_long > INT_MAX) {
+    if (max_clients_long <= 0 || max_clients_long > INT_MAX) {
         fprintf(stderr, "max_clients invalid\n");
         DTOR_ERR_RETURN(errdtor, dtor, -1);
     }

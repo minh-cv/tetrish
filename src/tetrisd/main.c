@@ -34,9 +34,35 @@
 
 static volatile sig_atomic_t running = 1;
 
-static void handle_signal(int signo) {
+static void sig_terminate(int signo) {
     (void)signo;
     running = 0;
+}
+
+static void sig_empty_handler(int sig) { (void)sig; }
+
+static volatile sig_atomic_t reload_config = 0;
+static void sig_reload_config(int sig) {
+    (void)sig;
+    reload_config = 1;
+}
+
+static volatile sig_atomic_t dump_state = 0;
+static void sig_dump_state(int sig) {
+    (void)sig;
+    dump_state = 1;
+}
+
+static int set_sig_handler(int sig, void (*handle_signal)(int)) {
+    struct sigaction sa = {0};
+    sa.sa_handler = handle_signal;
+    sigemptyset(&sa.sa_mask);
+    sa.sa_flags = 0;
+
+    if (sigaction(sig, &sa, NULL) == -1) {
+        return -1;
+    }
+    return 0;
 }
 
 static DTOR_WRAPPER_DEFINE(tetrish_credential_free)
@@ -210,13 +236,12 @@ int main() {
 
     logger_set_log_handler(logger_log_null);
 
-    struct sigaction sa = {0};
-    sa.sa_handler = handle_signal;
-    sigemptyset(&sa.sa_mask);
-    sa.sa_flags = 0;
-
-    if (sigaction(SIGINT, &sa, NULL) == -1 ||
-        sigaction(SIGTERM, &sa, NULL) == -1) {
+    if (set_sig_handler(SIGINT, sig_terminate) == -1 ||
+        set_sig_handler(SIGTERM, sig_terminate) == -1 ||
+        set_sig_handler(SIGPIPE, sig_empty_handler) == -1 ||
+        set_sig_handler(SIGHUP, sig_reload_config) == -1 ||
+        set_sig_handler(SIGUSR1, sig_dump_state) == -1
+    ) {
         perror("sigaction");
         DTOR_RETURN(dtor, 1);
     }
@@ -387,6 +412,73 @@ int main() {
             if (logger_ctx.log_buf.buffer_size == 0) {
                 logger_ctx.has_log = false;
             }
+        }
+
+        if (reload_config) {
+            reload_config = 0;
+            LOGGER_LOG(LOG_INFO, "config", "Reconfiguring...");
+            struct config_var tmp_cfg;
+            if (config_var_init(&tmp_cfg) == -1) {
+                continue;
+            }
+
+            if (tmp_cfg.port != cfg.port) {
+                LOGGER_LOG(LOG_WARN, "config", "Ignoring new port");
+            }
+
+            if (strcmp(tmp_cfg.address, cfg.address) != 0) {
+                char* tmp = cfg.address;
+                cfg.address = tmp_cfg.address;
+                tmp_cfg.address = tmp;
+            }
+
+            if (strcmp(tmp_cfg.key_path, cfg.key_path) != 0 || strcmp(tmp_cfg.cert_path, cfg.cert_path) != 0) {
+                TetrishCredential new_credential;
+                if (tetrish_credential_init(&new_credential, tmp_cfg.key_path, tmp_cfg.cert_path) == -1) {
+                    LOGGER_LOG(LOG_ERROR, "config", "Cannot reconfigure new credential path");
+                }
+                else {
+                    TetrishCredential tmp = credential;
+                    credential = new_credential;
+                    tetrish_credential_free(&tmp);
+                }
+            }
+
+            if (tmp_cfg.max_events != cfg.max_events) {
+                struct epoll_event* new_events = realloc(events, (size_t)tmp_cfg.max_events*sizeof(struct epoll_event));
+                if (new_events == NULL) {
+                    // TODO: log 
+                }
+                else {
+                    events = new_events;
+                    cfg.max_events = tmp_cfg.max_events;
+                }
+            }
+
+            if (strcmp(tmp_cfg.log_ipc, cfg.log_ipc) != 0) {
+                char* tmp = tmp_cfg.log_ipc;
+                tmp_cfg.log_ipc = cfg.log_ipc;
+                cfg.log_ipc = tmp;
+            }
+
+            if (tmp_cfg.max_clients != cfg.max_clients) {
+                if (tmp_cfg.max_clients < cfg.max_clients) {
+                    LOGGER_LOG(LOG_ERROR, "config", "Can't reconfig max_clients");
+                }
+                else {
+                    Client* new_clients = realloc(clients, (size_t)tmp_cfg.max_clients*sizeof(*new_clients));
+                    if (new_clients == NULL) {
+                        // TODO: log 
+                    }
+                    else {
+                        clients = new_clients;
+                        memset(&new_clients[cfg.max_clients], 0, (size_t)(tmp_cfg.max_clients - cfg.max_clients)*sizeof(Client));
+                        cfg.max_clients = tmp_cfg.max_clients;
+                    }
+                }
+            }
+
+            config_var_free(&tmp_cfg);
         }
     }
 
