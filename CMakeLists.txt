@@ -14,7 +14,7 @@ target_include_directories(libtetrisbrain PUBLIC include)
 add_executable(tetrisctl src/tetrisctl/main.c)
 add_executable(tetrisd src/tetrisd/main.c src/tetrisd/tetris_client.c src/tetrisd/epollmanip.c src/tetrisd/config_var.c)
 target_include_directories(tetrisd PRIVATE src/tetrisd)
-target_link_libraries(tetrisd PRIVATE server daemon logger)
+target_link_libraries(tetrisd PRIVATE server daemon logger client_logger log_buf)
 target_compile_definitions(tetrisd PRIVATE
     $<$<BOOL:${TETRISH_TETRISD_NO_DAEMON}>:TETRISH_TETRISD_NO_DAEMON>
 )
