@@ -3,6 +3,7 @@ project(tetrish LANGUAGES C)
 
 option(TETRISH_DEV_MODE "Enable dev-mode macros" OFF)
 option(TETRISH_TETRISD_NO_DAEMON "Disable daemonization of tetrisd" ${TETRISH_DEV_MODE})
+option(TETRISH_TETRISLOGD_NO_DAEMON "Disable daemonization of tetrislogd" ${TETRISH_DEV_MODE})
 
 add_compile_options(-g -Wall -Wextra -Wpedantic -Wconversion -Wno-strict-prototypes)
 
@@ -22,7 +23,10 @@ target_compile_definitions(tetrisd PRIVATE
 add_executable(tetrislogd src/tetrislogd/main.c
     src/tetrislogd/config_var.c)
 target_include_directories(tetrislogd PRIVATE include src/tetrislogd)
-target_link_libraries(tetrislogd PRIVATE config tetrissh)
+target_link_libraries(tetrislogd PRIVATE config tetrissh daemon)
+target_compile_definitions(tetrislogd PRIVATE
+    $<$<BOOL:${TETRISH_TETRISLOGD_NO_DAEMON}>:TETRISH_TETRISLOGD_NO_DAEMON>
+)
 
 add_executable(tetrisu src/tetrisu/main.c
     src/tetrisu/config_var.c)

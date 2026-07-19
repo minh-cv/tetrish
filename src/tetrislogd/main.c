@@ -11,6 +11,7 @@
 #include <sys/un.h>
 #include <unistd.h>
 #include "config_var.h"
+#include "daemon.h"
 #include "dtor.h"
 #include "tetrissh.h"
 #include <fcntl.h>
@@ -87,6 +88,20 @@ static int prepare_socket(const char* path) {
 
 int main() {
     DTOR_DEFINE(dtor, 10);
+
+    #ifndef TETRISH_TETRISLOGD_NO_DAEMON
+    switch (incantation()) {
+    case 0:
+        DTOR_RETURN(dtor, 0);
+    case -1:
+        perror("incantation");
+        DTOR_RETURN(dtor, 1);
+    case 1:
+        break;
+    default:
+        assert(false);
+    }
+    #endif
 
     struct sigaction sigterm_act = {0};
     sigterm_act.sa_handler = sigterm_handler;
