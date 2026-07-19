@@ -122,7 +122,7 @@ static int prepare_socket(const char* address, int port) {
     DTOR_RETURN(dtor, -1);
 }
 
-int prepare_logger_socket(const char* log_ipc) {
+static int prepare_logger_socket(const char* log_ipc) {
     int sockfd = socket(AF_UNIX, SOCK_STREAM, 0);
     if (sockfd == -1) {
         LOGGER_PERROR("logger", "socket");
@@ -188,7 +188,7 @@ static int logger_handler_log_buf(char* string) {
     return 0;
 }
 
-void main_yield_handler(int epoll_fd, Client* c) {
+static void main_yield_handler(int epoll_fd, Client* c) {
     switch (c->tag) {
     case CLIENT_TAG_UNAUTHED: {
         ClientUnauthed old = c->client_unauthed;
