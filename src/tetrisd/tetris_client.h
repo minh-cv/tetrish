@@ -8,10 +8,6 @@
 //! ClientUnauthed is promoted to once the handshake completes (CLIENT_IO_YIELD).
 typedef struct TetrisClient {
     struct ClientIo base;
-    enum {
-        TETRIS_CLIENT_START,
-        TETRIS_CLIENT_ACTIVE,
-    } state;
     SessionKey session_key;
 } TetrisClient;
 

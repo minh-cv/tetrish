@@ -39,12 +39,6 @@ static int print_client_message(TetrisClient* c) {
 ClientIoResult tetris_client_transist_read(struct ClientIo* c_base) {
     TetrisClient* c = downcast(c_base);
 
-    if (c->state == TETRIS_CLIENT_START) {
-        c->state = TETRIS_CLIENT_ACTIVE;
-        client_io_transit_state(c_base, CLIENT_READING_LEN, 1);
-        return CLIENT_IO_CONTINUE;
-    }
-
     if (print_client_message(c) == -1) {
         return CLIENT_IO_ERR;
     }
@@ -98,8 +92,7 @@ ClientIoResult tetris_client_transist_write(struct ClientIo* c_base) {
 void tetris_client_init(TetrisClient* c, int client_fd, SessionKey* key) {
     client_io_init(&c->base, client_fd);
     memcpy(c->session_key, key, sizeof(c->session_key));
-    client_io_transit_state(&c->base, CLIENT_READ_TRANSIT, 0);
-    c->state = TETRIS_CLIENT_START;
+    client_io_transit_state(&c->base, CLIENT_READING_LEN, 1);
 }
 
 void tetris_client_free(TetrisClient* c) {
