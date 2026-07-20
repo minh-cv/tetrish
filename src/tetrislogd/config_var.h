@@ -4,6 +4,7 @@
 struct config_var {
     char* log_ipc;
     char* log_path;
+    int max_clients;
 };
 
 int config_var_init(struct config_var *cfg_var);

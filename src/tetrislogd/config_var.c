@@ -33,6 +33,8 @@ int config_var_init(struct config_var* cfg_var) {
     }
     DTOR_INSERT(dtor, config_free, &config);
 
+    static const int LOGD_MAX_CLIENTS_DEFAULT = 64;
+
     char* log_ipc = config_get_path(&config, "log_ipc", project_dir);
     if (log_ipc == NULL) {
         fputs("log_ipc invalid\n", stderr);
@@ -47,9 +49,20 @@ int config_var_init(struct config_var* cfg_var) {
     }
     DTOR_INSERT(errdtor, free, log_path);
 
+    long logd_max_clients_long;
+    if (config_get_long_arg(&config, "logd_max_clients", &logd_max_clients_long) == -1) {
+        logd_max_clients_long = LOGD_MAX_CLIENTS_DEFAULT;
+    }
+    if (logd_max_clients_long <= 0 || logd_max_clients_long > INT_MAX) {
+        fprintf(stderr, "logd_max_clients invalid\n");
+        DTOR_ERR_RETURN(errdtor, dtor, -1);
+    }
+    const int LOGD_MAX_CLIENTS = (int)logd_max_clients_long;
+
     struct config_var new_cfg = {
         log_ipc,
         log_path,
+        LOGD_MAX_CLIENTS,
     };
 
     *cfg_var = new_cfg;

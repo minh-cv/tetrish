@@ -7,6 +7,8 @@ option(TETRISH_TETRISLOGD_NO_DAEMON "Disable daemonization of tetrislogd" ${TETR
 
 add_compile_options(-g -Wall -Wextra -Wpedantic -Wconversion -Wno-strict-prototypes)
 
+find_package(Threads REQUIRED)
+
 add_subdirectory(external/corestack)
 
 add_library(libtetrisbrain src/libtetrisbrain/tetrisbrain.c)
@@ -23,7 +25,7 @@ target_compile_definitions(tetrisd PRIVATE
 add_executable(tetrislogd src/tetrislogd/main.c
     src/tetrislogd/config_var.c)
 target_include_directories(tetrislogd PRIVATE include src/tetrislogd)
-target_link_libraries(tetrislogd PRIVATE config tetrissh daemon)
+target_link_libraries(tetrislogd PRIVATE config tetrissh daemon Threads::Threads)
 target_compile_definitions(tetrislogd PRIVATE
     $<$<BOOL:${TETRISH_TETRISLOGD_NO_DAEMON}>:TETRISH_TETRISLOGD_NO_DAEMON>
 )

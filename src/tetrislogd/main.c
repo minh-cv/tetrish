@@ -1,5 +1,6 @@
 #include <errno.h>
 #include <poll.h>
+#include <pthread.h>
 #include <sched.h>
 #include <stdbool.h>
 #include <stddef.h>
@@ -9,15 +10,76 @@
 #include <string.h>
 #include <sys/socket.h>
 #include <sys/un.h>
+#include <time.h>
 #include <unistd.h>
 #include "config_var.h"
+#ifndef TETRISH_TETRISLOGD_NO_DAEMON
 #include "daemon.h"
+#endif
 #include "dtor.h"
 #include "tetrissh.h"
 #include <fcntl.h>
 
 volatile sig_atomic_t running = 1;
 volatile sig_atomic_t flush = 0;
+
+typedef struct {
+    pthread_mutex_t out_file_mu;
+    FILE* out_file;
+
+    pthread_mutex_t clients_mu;
+    int client_count;
+    int max_clients;
+} LogdCtx;
+
+typedef struct {
+    int fd;
+    LogdCtx* ctx;
+} ClientArg;
+
+static void* client_thread_main(void* arg_v) {
+    ClientArg* arg = arg_v;
+    int fd = arg->fd;
+    LogdCtx* ctx = arg->ctx;
+    free(arg);
+
+    while (running) {
+        struct pollfd pfd = { .fd = fd, .events = POLLIN, .revents = 0 };
+        int ready = poll(&pfd, 1, 1000);
+        if (ready == -1) {
+            if (errno == EINTR) {
+                continue;
+            }
+            perror("poll");
+            break;
+        }
+        if (ready == 0) {
+            continue;
+        }
+
+        uint32_t frame_length;
+        unsigned char* frame = tetrish_recv_frame(fd, &frame_length, NULL);
+        if (frame == NULL) {
+            break;
+        }
+
+        pthread_mutex_lock(&ctx->out_file_mu);
+        bool write_ok = fwrite(frame, frame_length, 1, ctx->out_file) == 1 &&
+                         fflush(ctx->out_file) != EOF;
+        pthread_mutex_unlock(&ctx->out_file_mu);
+        free(frame);
+        if (!write_ok) {
+            perror("fwrite/fflush");
+            break;
+        }
+    }
+
+    close(fd);
+    pthread_mutex_lock(&ctx->clients_mu);
+    ctx->client_count--;
+    pthread_mutex_unlock(&ctx->clients_mu);
+    return NULL;
+}
 
 static void sigterm_handler(int _) {
     (void)_;
@@ -43,12 +105,17 @@ static void fclose_ptr(FILE** file) {
     fclose(*file);
 }
 
+static void mutex_destroy_ptr(pthread_mutex_t* mutex) {
+    pthread_mutex_destroy(mutex);
+}
+
 static DTOR_WRAPPER_DEFINE(fclose_ptr)
 static DTOR_WRAPPER_DEFINE(close_ptr)
 static DTOR_WRAPPER_DEFINE(config_var_free)
 static DTOR_WRAPPER_DEFINE(unlink_cfg_log_ipc)
+static DTOR_WRAPPER_DEFINE(mutex_destroy_ptr)
 
-static int prepare_socket(const char* path) {
+static int prepare_socket(const char* path, int backlog) {
     DTOR_DEFINE(dtor, 10);
 
     struct sockaddr_un addr;
@@ -78,7 +145,7 @@ static int prepare_socket(const char* path) {
         DTOR_RETURN(dtor, -1);
     }
 
-    if (listen(listen_fd, 1) == -1) {
+    if (listen(listen_fd, backlog) == -1) {
         perror("listen");
         DTOR_RETURN(dtor, -1);
     }
@@ -119,22 +186,27 @@ int main() {
     }
     DTOR_INSERT(dtor, config_var_free, &cfg);
 
+    LogdCtx ctx = {0};
+    pthread_mutex_init(&ctx.out_file_mu, NULL);
+    DTOR_INSERT(dtor, mutex_destroy_ptr, &ctx.out_file_mu);
+    pthread_mutex_init(&ctx.clients_mu, NULL);
+    DTOR_INSERT(dtor, mutex_destroy_ptr, &ctx.clients_mu);
+    ctx.max_clients = cfg.max_clients;
+
     FILE* out_file = fopen(cfg.log_path, "a");
     if (out_file == NULL) {
         perror("out_file");
         DTOR_RETURN(dtor, -1);
     }
     DTOR_INSERT(dtor, fclose_ptr, &out_file);
+    ctx.out_file = out_file;
 
-    int fd = prepare_socket(cfg.log_ipc);
+    int fd = prepare_socket(cfg.log_ipc, cfg.max_clients);
     if (fd == -1) {
         DTOR_RETURN(dtor, 1);
     }
     DTOR_INSERT(dtor, close_ptr, &fd);
     DTOR_INSERT(dtor, unlink_cfg_log_ipc, &cfg);
-
-    bool is_connected = false;
-    int server_fd;
 
     while (running) {
         if (flush) {
@@ -156,13 +228,14 @@ int main() {
                 continue;
             }
 
-            int new_fd = prepare_socket(new_cfg.log_ipc);
+            int new_fd = prepare_socket(new_cfg.log_ipc, new_cfg.max_clients);
             if (new_fd == -1) {
                 fclose(new_out_file);
                 config_var_free(&new_cfg);
                 continue;
             }
 
+            pthread_mutex_lock(&ctx.out_file_mu);
             if (fflush(out_file) == -1) {
                 perror("fflush");
             }
@@ -170,6 +243,8 @@ int main() {
                 perror("fclose");
             }
             out_file = new_out_file;
+            ctx.out_file = new_out_file;
+            pthread_mutex_unlock(&ctx.out_file_mu);
 
             close(fd);
             if (strcmp(cfg.log_ipc, new_cfg.log_ipc) != 0 &&
@@ -178,6 +253,10 @@ int main() {
             }
             fd = new_fd;
 
+            pthread_mutex_lock(&ctx.clients_mu);
+            ctx.max_clients = new_cfg.max_clients;
+            pthread_mutex_unlock(&ctx.clients_mu);
+
             config_var_free(&cfg);
             cfg = new_cfg;
 
@@ -185,23 +264,7 @@ int main() {
             continue;
         }
 
-        if (!is_connected) {
-            if ((server_fd = accept(fd, NULL, NULL)) == -1) {
-                if (errno == EINTR) {
-                    continue;
-                }
-                perror("accept");
-                continue;
-            }
-            is_connected = true;
-            continue;
-        }
-
-        // Gate the blocking tetrish_recv_frame() call behind poll(): its internal
-        // recv loop retries silently on EINTR, so calling it directly on an idle
-        // connection would swallow SIGTERM/SIGHUP until more data arrives. Poll
-        // with a timeout keeps `running`/`flush` checked regularly instead.
-        struct pollfd pfd = { .fd = server_fd, .events = POLLIN, .revents = 0 };
+        struct pollfd pfd = { .fd = fd, .events = POLLIN, .revents = 0 };
         int ready = poll(&pfd, 1, 1000);
         if (ready == -1) {
             if (errno == EINTR) {
@@ -214,39 +277,67 @@ int main() {
             continue;
         }
 
-        uint32_t frame_length;
-        unsigned char* frame = tetrish_recv_frame(server_fd, &frame_length, NULL);
-        if (frame == NULL) {
-            fprintf(stderr, "tetrish_recv_frame: connection closed or invalid frame\n");
-            is_connected = false;
-            close(server_fd);
+        int client_fd = accept(fd, NULL, NULL);
+        if (client_fd == -1) {
+            if (errno == EINTR) {
+                continue;
+            }
+            perror("accept");
             continue;
         }
 
-        // do whatever with the frame, for now just log directly
-        if (fwrite(frame, frame_length, 1, out_file) != 1) {
-            perror("fwrite");
-            free(frame);
-            DTOR_RETURN(dtor, 1);
+        pthread_mutex_lock(&ctx.clients_mu);
+        bool full = ctx.client_count >= ctx.max_clients;
+        if (!full) {
+            ctx.client_count++;
+        }
+        pthread_mutex_unlock(&ctx.clients_mu);
+
+        if (full) {
+            fprintf(stderr, "logd_max_clients reached, rejecting connection\n");
+            close(client_fd);
+            continue;
         }
 
-        if (fflush(out_file) == -1) {
-            perror("fflush");
-            free(frame);
-            DTOR_RETURN(dtor, 1);
+        ClientArg* arg = malloc(sizeof(*arg));
+        if (arg == NULL) {
+            perror("malloc");
+            close(client_fd);
+            pthread_mutex_lock(&ctx.clients_mu);
+            ctx.client_count--;
+            pthread_mutex_unlock(&ctx.clients_mu);
+            continue;
         }
+        arg->fd = client_fd;
+        arg->ctx = &ctx;
 
-        free(frame);
-        continue;
+        pthread_t tid;
+        if (pthread_create(&tid, NULL, client_thread_main, arg) != 0) {
+            perror("pthread_create");
+            free(arg);
+            close(client_fd);
+            pthread_mutex_lock(&ctx.clients_mu);
+            ctx.client_count--;
+            pthread_mutex_unlock(&ctx.clients_mu);
+            continue;
+        }
+        pthread_detach(tid);
+    }
+
+    struct timespec drain_ts = { .tv_sec = 0, .tv_nsec = 100 * 1000 * 1000 };
+    for (;;) {
+        pthread_mutex_lock(&ctx.clients_mu);
+        int remaining = ctx.client_count;
+        pthread_mutex_unlock(&ctx.clients_mu);
+        if (remaining == 0) {
+            break;
+        }
+        nanosleep(&drain_ts, NULL);
     }
 
     if (fflush(out_file) == -1) {
         perror("fflush");
         DTOR_RETURN(dtor, 1);
-    }
-
-    if (is_connected) {
-        close(server_fd);
     }
 
     DTOR_RETURN(dtor, 0);
