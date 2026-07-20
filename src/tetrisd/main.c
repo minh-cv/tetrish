@@ -41,10 +41,10 @@ static void sig_terminate(int signo) {
 
 static void sig_empty_handler(int sig) { (void)sig; }
 
-static volatile sig_atomic_t reload_config = 0;
+static volatile sig_atomic_t should_reload_config = 0;
 static void sig_reload_config(int sig) {
     (void)sig;
-    reload_config = 1;
+    should_reload_config = 1;
 }
 
 static volatile sig_atomic_t dump_state = 0;
@@ -385,6 +385,29 @@ int main() {
                 continue;
             }
 
+            if (c->tag == CLIENT_TAG_LOGGER) {
+                assert(c->client_logger.base.fd == client_logger_fd && client_logger_fd != -1);
+                unsigned int lost_frames = c->client_logger.base.frame_count;
+                if (evs & (EPOLLERR | EPOLLHUP | EPOLLRDHUP)) {
+                    LOGGER_LOG(LOG_INFO, "client", "closing client fd=%d", fd);
+                    close_client(epoll_fd, c);
+                    logger_ctx.log_buf.dropped += lost_frames;
+                    continue;
+                }
+
+                if (evs & (EPOLLIN | EPOLLOUT)) {
+                    ClientIoResult result = resume_client_event(epoll_fd, c);
+                    if (result != CLIENT_IO_YIELD) {
+                        continue;
+                    }
+                    // technically the lost frames can be restored back to log_buf but that requires push backwards.
+                    logger_ctx.log_buf.dropped += lost_frames;
+                    // no yield
+                }
+                
+                continue;
+            }
+
             if (evs & (EPOLLERR | EPOLLHUP | EPOLLRDHUP)) {
                 LOGGER_LOG(LOG_INFO, "client", "closing client fd=%d", fd);
                 close_client(epoll_fd, c);
@@ -422,71 +445,9 @@ int main() {
             }
         }
 
-        if (reload_config) {
-            reload_config = 0;
-            LOGGER_LOG(LOG_INFO, "config", "Reconfiguring...");
-            struct config_var tmp_cfg;
-            if (config_var_init(&tmp_cfg) == -1) {
-                continue;
-            }
-
-            if (tmp_cfg.port != cfg.port) {
-                LOGGER_LOG(LOG_WARN, "config", "Ignoring new port");
-            }
-
-            if (strcmp(tmp_cfg.address, cfg.address) != 0) {
-                char* tmp = cfg.address;
-                cfg.address = tmp_cfg.address;
-                tmp_cfg.address = tmp;
-            }
-
-            if (strcmp(tmp_cfg.key_path, cfg.key_path) != 0 || strcmp(tmp_cfg.cert_path, cfg.cert_path) != 0) {
-                TetrishCredential new_credential;
-                if (tetrish_credential_init(&new_credential, tmp_cfg.key_path, tmp_cfg.cert_path) == -1) {
-                    LOGGER_LOG(LOG_ERROR, "config", "Cannot reconfigure new credential path");
-                }
-                else {
-                    TetrishCredential tmp = credential;
-                    credential = new_credential;
-                    tetrish_credential_free(&tmp);
-                }
-            }
-
-            if (tmp_cfg.max_events != cfg.max_events) {
-                struct epoll_event* new_events = realloc(events, (size_t)tmp_cfg.max_events*sizeof(struct epoll_event));
-                if (new_events == NULL) {
-                    // TODO: log 
-                }
-                else {
-                    events = new_events;
-                    cfg.max_events = tmp_cfg.max_events;
-                }
-            }
-
-            if (strcmp(tmp_cfg.log_ipc, cfg.log_ipc) != 0) {
-                char* tmp = tmp_cfg.log_ipc;
-                tmp_cfg.log_ipc = cfg.log_ipc;
-                cfg.log_ipc = tmp;
-            }
-
-            if (tmp_cfg.max_clients != cfg.max_clients) {
-                if (tmp_cfg.max_clients < cfg.max_clients) {
-                    LOGGER_LOG(LOG_ERROR, "config", "Can't reconfig max_clients");
-                }
-                else {
-                    Client* new_clients = realloc(clients, (size_t)tmp_cfg.max_clients*sizeof(*new_clients));
-                    if (new_clients == NULL) {
-                        // TODO: log 
-                    }
-                    else {
-                        clients = new_clients;
-                        memset(&new_clients[cfg.max_clients], 0, (size_t)(tmp_cfg.max_clients - cfg.max_clients)*sizeof(Client));
-                        cfg.max_clients = tmp_cfg.max_clients;
-                    }
-                }
-            }
-
-            config_var_free(&tmp_cfg);
+        if (should_reload_config) {
+            should_reload_config = 0;
+            reload_config(&cfg, &credential, events, clients);
         }
     }
 
