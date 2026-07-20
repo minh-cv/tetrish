@@ -11,8 +11,12 @@ find_package(Threads REQUIRED)
 
 add_subdirectory(external/corestack)
 
-add_library(libtetrisbrain src/libtetrisbrain/tetrisbrain.c)
-target_include_directories(libtetrisbrain PUBLIC include)
+add_library(tetrisbrain
+    src/libtetrisbrain/control.c
+    src/libtetrisbrain/state.c
+    src/libtetrisbrain/static.c)
+target_include_directories(tetrisbrain PRIVATE include)
+target_compile_options(tetrisbrain PRIVATE -Wno-missing-braces)
 
 add_executable(tetrisctl src/tetrisctl/main.c)
 add_executable(tetrisd src/tetrisd/main.c src/tetrisd/tetris_client.c src/tetrisd/epollmanip.c src/tetrisd/config_var.c)
@@ -68,7 +72,7 @@ set_target_properties(hash PROPERTIES OUTPUT_NAME "#")
 
 install(
     TARGETS
-        libtetrisbrain
+        tetrisbrain
         tetrisctl
         tetrisd
         tetrislogd
