@@ -154,9 +154,8 @@ void reload_config(struct config_var* cfg, TetrishCredential* credential, struct
             LOGGER_LOG(LOG_ERROR, "config", "Cannot reconfigure new credential path");
         }
         else {
-            TetrishCredential tmp = *credential;
+            tetrish_credential_free(credential);
             *credential = new_credential;
-            tetrish_credential_free(&tmp);
         }
     }
 

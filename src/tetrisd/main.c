@@ -385,29 +385,6 @@ int main() {
                 continue;
             }
 
-            if (c->tag == CLIENT_TAG_LOGGER) {
-                assert(c->client_logger.base.fd == client_logger_fd && client_logger_fd != -1);
-                unsigned int lost_frames = c->client_logger.base.frame_count;
-                if (evs & (EPOLLERR | EPOLLHUP | EPOLLRDHUP)) {
-                    LOGGER_LOG(LOG_INFO, "client", "closing client fd=%d", fd);
-                    close_client(epoll_fd, c);
-                    logger_ctx.log_buf.dropped += lost_frames;
-                    continue;
-                }
-
-                if (evs & (EPOLLIN | EPOLLOUT)) {
-                    ClientIoResult result = resume_client_event(epoll_fd, c);
-                    if (result != CLIENT_IO_YIELD) {
-                        continue;
-                    }
-                    // technically the lost frames can be restored back to log_buf but that requires push backwards.
-                    logger_ctx.log_buf.dropped += lost_frames;
-                    // no yield
-                }
-                
-                continue;
-            }
-
             if (evs & (EPOLLERR | EPOLLHUP | EPOLLRDHUP)) {
                 LOGGER_LOG(LOG_INFO, "client", "closing client fd=%d", fd);
                 close_client(epoll_fd, c);
