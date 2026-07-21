@@ -44,6 +44,16 @@ target_include_directories(backup PRIVATE include)
 add_executable(sys src/tetrish/system_programs/sys.c)
 target_include_directories(sys PRIVATE include)
 
+find_package(Doxygen QUIET)
+if(DOXYGEN_FOUND)
+    add_custom_target(docs
+        COMMAND ${DOXYGEN_EXECUTABLE} ${CMAKE_SOURCE_DIR}/Doxyfile
+        WORKING_DIRECTORY ${CMAKE_SOURCE_DIR}
+        COMMENT "Generating API documentation with Doxygen (output in docs/doxygen/html)"
+        VERBATIM
+    )
+endif()
+
 install(
     TARGETS
         libhtttp
