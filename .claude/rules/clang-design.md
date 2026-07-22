@@ -6,29 +6,40 @@ paths:
 
 # C Design Conventions
 
-Extracted from the current codebase (2026-07-22), not invented. Where the codebase is inconsistent, that's flagged below instead of silently picking one.
+Extracted from the codebase (last verified 2026-07-22 on `feat/sample-implementation`), not invented. Where the codebase is inconsistent, that's flagged below instead of silently picking one.
 
 ## Consistent — follow these
 
-- **Naming**: `snake_case` for functions, variables, and file-scope names throughout (`read_command`, `verify_server_cert`, `mkdir_archive`).
-- **Error handling**: on syscall/libc failure, `perror("<context>")` followed by `return -1` (recoverable) or `exit(1)` / `_exit(1)` (unrecoverable), e.g. `dcheck.c`, `dspawn.c`, `shell.c`. Don't introduce a different error-signaling style (error codes via `errno` output param, `goto fail`, etc.) without reason.
-- **Build**: one `add_library`/`add_executable` per module in `CMakeLists.txt`, headers under `include/`, private headers included via `target_include_directories(... PRIVATE include)`.
+- **Naming**: `snake_case` for functions, variables, and file-scope names throughout (`read_command`, `verify_server_cert`, `htttp_serialize`). Library functions are prefixed with their module (`htttp_*`, `config_*`, `tetrish_*` for tetrissh wire helpers).
+- **Header guards**: `TETRISH_<MODULE>_<NAME>_H` — all recent headers follow this (`TETRISH_CONFIG_H`, `TETRISH_TETRISD_CLIENT_H`, `TETRISH_TETRISU_CONFIG_VAR_H`). Use it for every new header. Legacy stragglers exist (see below) but don't copy them.
+- **Header placement**: public library headers go in `include/`; module-private headers sit next to their sources (`src/tetrisd/*.h`, `src/tetrisu/*.h`) and are exposed via `target_include_directories(<target> PRIVATE src/<module>)`. The shell's internal headers live in `src/tetrish/libs/`.
+- **Cleanup on error paths**: the `dtor.h` macro system is the established pattern for functions that acquire resources:
+  ```c
+  static DTOR_WRAPPER_DEFINE(free)
+  static DTOR_WRAPPER_DEFINE(config_free)
 
-## Exists but not yet adopted — don't assume it's required
-
-- **`dtor.h`** defines a scope-based cleanup macro system (`DTOR_DEFINE`, `DTOR_WRAPPER_DEFINE`, etc.) but grep across `src/**/*.c` finds **zero uses of any `DTOR_*` macro**. It's available infrastructure, not an established pattern yet — don't assume existing code follows it, and don't introduce it into new code unless asked.
-- Several entry points (`src/tetrisd/main.c`, `src/tetrisu/main.c`) are empty stubs (`int main() { return 0; }`). Treat modules like this as unimplemented scaffolding, not as an example of a minimal/finished style.
+  int f(void) {
+      DTOR_DEFINE(dtor, 10);
+      ...
+      if (fail) DTOR_RETURN(dtor, -1);   // runs registered destructors, then returns
+      DTOR_INSERT(dtor, free, ptr);      // register cleanup right after acquisition
+      ...
+      DTOR_RETURN(dtor, 0);
+  }
+  ```
+  Used across `tetrisu`, `tetrisd`, and `libtetrissh`. In functions that use a dtor, **never bare-`return` after the first `DTOR_INSERT`** — that leaks (see commit `4460dce` fixing exactly this). Use `DTOR_RETURN` for every exit.
+- **Build**: one `add_library`/`add_executable` per module in `CMakeLists.txt`. Libraries are default (static) — not `SHARED`. `common` links OpenSSL `crypto`. Library include dirs are `PUBLIC` so dependents inherit them.
 
 ## Inconsistent — flagged, not resolved
 
-- **Header guards** don't follow one scheme: `dtor.h`/`htttp.h`/`tetrisbrain.h`/`tetrissh.h` use a `TETRISH_<NAME>_H` prefix, but `shell.h` uses bare `SHELL_H`, `perms.h` uses bare `PERMS_H`, and `common.h` uses bare `COMMON_H`. The bare ones risk collisions with system/third-party headers. No rule enforced here — pick `TETRISH_<NAME>_H` for new headers unless told otherwise, since it's the more common form and collision-safe, but this needs an explicit decision to standardize existing headers.
-- **File header comments** are not uniform: `common.c`/`common.h` open with a `/** name \n --- \n description */` block; most other `.c` files (e.g. `tetrisbrain.c`, `backup.c`) have no file-level comment at all. Not treated as a convention to replicate.
-- **`common.h`/`common.c`** describe themselves as "Shared declarations for the Secure FTP project" — that name doesn't match this repo (`tetrish`). This looks like it may have been carried over from a different project. Worth confirming whether it's intentionally reused code or leftover boilerplate before treating its conventions (OpenSSL wrapper style, Fernet-equivalent naming, etc.) as canonical for `tetrish`.
+- **Legacy header guards**: `common.h` uses bare `COMMON_H`, `src/tetrish/libs/perms.h` uses bare `PERMS_H`, and `src/tetrish/libs/shell.h` / `system_program.h` have **no include guards at all**. New code must use the `TETRISH_` scheme; whether to retrofit these is an open decision.
+- **Error reporting** is two-generation: older code (`shell.c`, system programs) does `perror("<context>")` then `return -1` / `exit(1)`; newer code uses `DTOR_RETURN(dtor, -1)` for cleanup but is uneven about reporting — `epollmanip.c` has many bare `return -1`s with no diagnostic, `tetrisu` sometimes uses `fprintf(stderr, ...)`. For new code: use the DTOR pattern for cleanup, and prefer emitting *some* diagnostic (`perror` for syscall failures) before returning — but don't "fix" existing silent returns unasked.
+- **`common.h`/`common.c`** still self-describe as "Shared declarations for the Secure FTP project" — doesn't match this repo (`tetrish`). It's genuinely load-bearing now (linked by `tetrissh`, `tetrisd`, `tetrisu`), so it's reused code, but the header comment is stale. Don't treat its internal style (section-divider comments, `/** */` file headers) as a convention for new files.
 
 ## Open questions (need a decision, not guessed)
 
-1. Standardize all header guards to `TETRISH_<NAME>_H`, or leave as-is?
-2. Is `common.h`/`common.c` intentionally ported from another project, or stale/mislabeled?
-3. Is `dtor.h` meant to be adopted going forward, or dead/experimental code?
+1. Retrofit legacy headers (`common.h`, `perms.h`, `shell.h`, `system_program.h`) to `TETRISH_` guards — and add the missing guards?
+2. Update `common.h`'s "Secure FTP project" description to reflect its role in tetrish?
+3. Standardize error *reporting* (not just cleanup) — e.g. require a `perror`/`fprintf(stderr)` before every error return?
 
 Update this file once these are resolved so it stops listing them as open.
