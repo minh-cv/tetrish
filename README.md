@@ -202,11 +202,21 @@ then reads from stdin. Builtins are resolved first; anything else is
 (see `sample.tetrishrc`). This config path is independent of the `tetrisd`/
 `tetrisu` environment-variable config described above.
 
-The system programs under `src/tetrish/system_programs/` (`ld`, `ldr`,
-`find`, `backup`, `sys`, `hash`) are meant to be run from within `tetrish`
-and mostly link against the `perms` library for permission-string formatting.
-`backup` writes into an `archive/` directory; `hash` installs with the output
-name `#`.
+The system programs under `src/tetrish/system_programs/` are meant to be run
+from within `tetrish`:
+
+- `ld`, `ldr` — permission-aware directory listing (`ldr` recurses); both
+  link `perms` and call `perms_to_string` for the permission-string
+  formatting. `find` links `perms` too but doesn't actually call it — its
+  recursive filename search is a plain `strstr` match on `d_name`.
+- `backup` — forks/execs `tar` to archive `$BACKUP_DIR` into
+  `$PROJECT_DIR/archive/backup-<timestamp>.tar.gz`.
+- `sys` — prints OS/kernel/hostname, memory, CPU, and uptime info from
+  `uname`/`/proc`.
+- `hash` — stub (`main` returns `0`); installs with the output name `#`.
+- `dcheck`, `dspawn` — a daemon-testing pair: `dspawn` double-forks and
+  writes a heartbeat log to `$PROJECT_DIR/dspawn.log`; `dcheck` greps
+  `ps -efj` for the resulting `dspawn` process.
 
 ## Implementation status
 
@@ -223,6 +233,16 @@ name `#`.
 - **`common.h`**'s file header still describes it as being for a "Secure FTP
   project" — stale, but the code is genuinely load-bearing for `tetrish`'s
   transport layer.
+- **Gap vs. the course spec**: the assignment describes `tetrisd` as a
+  concurrent *game* server (multiplayer rooms, `SIGHUP`/`SIGUSR1` handling
+  alongside `SIGINT`/`SIGTERM`, an admin control plane for `tetrisctl`,
+  log-forwarding to `tetrislogd` over IPC) and `libhtttp` as carrying a fixed
+  game-command set (`JOIN`/`LEAVE`/`START`/`MOVE`/`ROTATE`/`DROP`/`STATE`).
+  None of that exists yet: `tetrisd` only installs handlers for `SIGINT` and
+  `SIGTERM`, has no admin/IPC socket of any kind, and
+  `htttp_message_t.method` (`include/htttp.h`) is a free-form string with no
+  command enum or whitelist — the parser accepts anything before the first
+  space. `libtetrisbrain` (piece/board/scoring logic) is untouched.
 
 See `.claude/rules/clang-design.md` for coding conventions and open design
 questions, and `.claude/rules/testing.md` for the (currently nonexistent)
