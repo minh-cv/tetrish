@@ -1,0 +1,15 @@
+{
+    "permissions": {
+        "allow": [
+            "Bash(cmake *)",
+            "Bash(make *)",
+            "Bash(ctest *)",
+            "Bash(git status)",
+            "Bash(git diff *)",
+            "Bash(git log *)"
+        ],
+        "deny": [
+            "Bash(rm -rf *)"
+        ]
+    }
+}

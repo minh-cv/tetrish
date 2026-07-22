@@ -1,0 +1,24 @@
+# CLI for safely copying git-ignored files from original worktree to another worktree
+
+# Local environment
+.env
+.env.local
+
+# Project dependent
+bin/
+lib/
+build/
+var/
+auth/*.crt
+!auth/cacsertificate.crt
+auth/*.pem
+*.o
+*.a
+tmp/
+.cache/
+.vscode/
+compile_commands.json
+.tetrishrc
+archive/
+docs/doxygen/
+docs/doxygen_warnings.log
