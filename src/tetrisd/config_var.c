@@ -13,9 +13,32 @@
 static DTOR_WRAPPER_DEFINE(free)
 static DTOR_WRAPPER_DEFINE(config_free)
 
+/*!
+    @brief Read a count of at least `minimum`, falling back to `fallback` when
+    the directive is absent or malformed.
+*/
+static int config_get_uint_arg(const Config* config, const char* directive,
+                               unsigned int fallback, unsigned int minimum, unsigned int* out) {
+    assert(fallback >= minimum);
+
+    long value;
+    if (config_get_long_arg(config, directive, &value) == -1) {
+        *out = fallback;
+        return 0;
+    }
+
+    if (value < (long)minimum || value > INT_MAX) {
+        fprintf(stderr, "%s invalid (minimum %u)\n", directive, minimum);
+        return -1;
+    }
+
+    *out = (unsigned int)value;
+    return 0;
+}
+
 int config_var_init(struct config_var* cfg_var) {
-    DTOR_DEFINE(errdtor, 10);
-    DTOR_DEFINE(dtor, 10);
+    DTOR_DEFINE(errdtor, 25);
+    DTOR_DEFINE(dtor, 25);
 
     const char* const project_dir = getenv("PROJECT_DIR");
     if (project_dir == NULL) {
@@ -25,8 +48,14 @@ int config_var_init(struct config_var* cfg_var) {
     
     static const int LISTEN_PORT_DEFAULT = 4321;
     static const char* const ADDRESS_DEFAULT = "localhost";
-    static const int MAX_EVENTS_DEFAULT = 64;
-    static const int MAX_CLIENTS_DEFAULT = 1024;
+    static const unsigned int MAX_EVENTS_DEFAULT = 64;
+    static const unsigned int MAX_FDS_DEFAULT = 1024;
+    static const unsigned int MAX_ROOMS_DEFAULT = 128;
+    static const unsigned int LOGGER_RECONNECT_SECONDS_DEFAULT = 5;
+    static const unsigned int LOGGER_CAPACITY_DEFAULT = 512;
+    static const unsigned int CLIENT_CAPACITY_DEFAULT = 8;
+    // the nonce response queues two frames back to back, so anything smaller stalls the handshake.
+    static const unsigned int CLIENT_CAPACITY_MIN = 2;
 
     char* const tetrishrc_path = concat_path(project_dir, ".tetrishrc");
     if (tetrishrc_path == NULL) {
@@ -46,7 +75,7 @@ int config_var_init(struct config_var* cfg_var) {
     }
     if (listen_port_long > UINT16_MAX || listen_port_long <= 0) {
         fprintf(stderr, "listen_port invalid\n");
-        DTOR_RETURN(errdtor, -1);
+        DTOR_ERR_RETURN(errdtor, dtor, -1);
     }
 
     size_t address_idx = config_get_arg_idx(&config, "address");
@@ -80,25 +109,37 @@ int config_var_init(struct config_var* cfg_var) {
     }
     DTOR_INSERT(errdtor, free, key_path);
 
-    long max_events_long;
-    if (config_get_long_arg(&config, "max_events", &max_events_long) == -1) {
-        max_events_long = MAX_EVENTS_DEFAULT;
-    }
-    if (max_events_long <= 0 || max_events_long > INT_MAX) {
-        fprintf(stderr, "max_events invalid\n");
+    unsigned int max_events;
+    if (config_get_uint_arg(&config, "max_events", MAX_EVENTS_DEFAULT, 1, &max_events) == -1) {
         DTOR_ERR_RETURN(errdtor, dtor, -1);
     }
-    const int MAX_EVENTS = (int)max_events_long;
 
-    long max_clients_long;
-    if (config_get_long_arg(&config, "max_clients", &max_clients_long) == -1) {
-        max_clients_long = MAX_CLIENTS_DEFAULT;
-    }
-    if (max_clients_long <= 0 || max_clients_long > INT_MAX) {
-        fprintf(stderr, "max_clients invalid\n");
+    unsigned int max_fds;
+    if (config_get_uint_arg(&config, "max_fds", MAX_FDS_DEFAULT, 1, &max_fds) == -1) {
         DTOR_ERR_RETURN(errdtor, dtor, -1);
     }
-    const int MAX_CLIENTS = (int)max_clients_long;
+
+    unsigned int max_rooms;
+    if (config_get_uint_arg(&config, "max_rooms", MAX_ROOMS_DEFAULT, 1, &max_rooms) == -1) {
+        DTOR_ERR_RETURN(errdtor, dtor, -1);
+    }
+
+    unsigned int logger_reconnect_seconds;
+    if (config_get_uint_arg(&config, "logger_reconnect_seconds",
+                            LOGGER_RECONNECT_SECONDS_DEFAULT, 1, &logger_reconnect_seconds) == -1) {
+        DTOR_ERR_RETURN(errdtor, dtor, -1);
+    }
+
+    unsigned int logger_capacity;
+    if (config_get_uint_arg(&config, "logger_capacity", LOGGER_CAPACITY_DEFAULT, 1, &logger_capacity) == -1) {
+        DTOR_ERR_RETURN(errdtor, dtor, -1);
+    }
+
+    unsigned int client_capacity;
+    if (config_get_uint_arg(&config, "client_capacity", CLIENT_CAPACITY_DEFAULT,
+                            CLIENT_CAPACITY_MIN, &client_capacity) == -1) {
+        DTOR_ERR_RETURN(errdtor, dtor, -1);
+    }
 
     char* log_ipc = config_get_path(&config, "log_ipc", project_dir);
     if (log_ipc == NULL) {
@@ -108,13 +149,17 @@ int config_var_init(struct config_var* cfg_var) {
     DTOR_INSERT(errdtor, free, log_ipc);
 
     struct config_var new_cfg = {
-        (int)listen_port_long,
-        address,
-        cert_path,
-        key_path,
-        MAX_EVENTS,
-        MAX_CLIENTS,
-        log_ipc,
+        .port = (int)listen_port_long,
+        .address = address,
+        .cert_path = cert_path,
+        .key_path = key_path,
+        .log_ipc = log_ipc,
+        .max_fds = max_fds,
+        .max_events = max_events,
+        .max_rooms = max_rooms,
+        .logger_reconnect_seconds = logger_reconnect_seconds,
+        .logger_capacity = logger_capacity,
+        .client_capacity = client_capacity,
     };
 
     *cfg_var = new_cfg;
