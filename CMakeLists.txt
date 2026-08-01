@@ -9,7 +9,18 @@ add_compile_options(-g -Wall -Wextra -Wpedantic -Wconversion -Wno-strict-prototy
 
 find_package(Threads REQUIRED)
 
+set(BUILD_SHARED_LIBS OFF CACHE BOOL "" FORCE)
 add_subdirectory(external/corestack)
+
+# cJSON's CMakeLists has no target_include_directories and defaults to a shared
+# lib plus its own test/install rules, so configure it and patch the interface.
+set(ENABLE_CJSON_TEST OFF CACHE BOOL "" FORCE)
+set(CJSON_OVERRIDE_BUILD_SHARED_LIBS ON CACHE BOOL "" FORCE)
+set(CJSON_BUILD_SHARED_LIBS OFF CACHE BOOL "" FORCE)
+set(ENABLE_TARGET_EXPORT OFF CACHE BOOL "" FORCE)
+set(ENABLE_CUSTOM_COMPILER_FLAGS OFF CACHE BOOL "" FORCE)
+add_subdirectory(external/cjson EXCLUDE_FROM_ALL)
+target_include_directories(cjson INTERFACE ${CMAKE_CURRENT_SOURCE_DIR}/external/cjson)
 
 add_library(tetrisbrain
     src/libtetrisbrain/control.c
@@ -19,12 +30,13 @@ target_include_directories(tetrisbrain PRIVATE include)
 target_compile_options(tetrisbrain PRIVATE -Wno-missing-braces)
 
 add_executable(tetrisctl src/tetrisctl/main.c)
-add_executable(tetrisd src/tetrisd/main.c src/tetrisd/tetris_client.c src/tetrisd/epollmanip.c src/tetrisd/config_var.c)
+add_executable(tetrisd src/tetrisd/main.c src/tetrisd/config_var.c src/tetrisd/player.c src/tetrisd/player_request.c src/tetrisd/sig.c src/tetrisd/socket.c src/tetrisd/server.c)
 target_include_directories(tetrisd PRIVATE src/tetrisd)
-target_link_libraries(tetrisd PRIVATE server daemon logger client_logger log_buf)
+target_link_libraries(tetrisd PRIVATE daemon logger network cjson htttp common tetrissh config)
 target_compile_definitions(tetrisd PRIVATE
     $<$<BOOL:${TETRISH_TETRISD_NO_DAEMON}>:TETRISH_TETRISD_NO_DAEMON>
 )
+target_include_directories(tetrisd PRIVATE include)
 
 add_executable(tetrislogd src/tetrislogd/main.c
     src/tetrislogd/config_var.c)
@@ -37,11 +49,8 @@ target_compile_definitions(tetrislogd PRIVATE
 add_executable(tetrisu src/tetrisu/main.c
     src/tetrisu/config_var.c)
 target_include_directories(tetrisu PRIVATE src/tetrisu)
-
-foreach(target tetrisd tetrisu)
-    target_include_directories(${target} PRIVATE include)
-    target_link_libraries(${target} PRIVATE htttp common tetrissh config)
-endforeach()
+target_link_libraries(tetrisu PRIVATE cjson htttp common tetrissh config)
+target_include_directories(tetrisu PRIVATE include)
 
 add_library(perms src/tetrish/libs/perms.c)
 target_include_directories(perms PUBLIC src/tetrish)

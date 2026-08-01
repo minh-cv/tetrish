@@ -3,6 +3,7 @@
 #include "logger.h"
 #include "network/reader.h"
 #include "network/writer.h"
+#include "player_request.h"
 #include "tetrissh.h"
 #include "type.h"
 
@@ -195,94 +196,25 @@ static int frame_from_htttp_message(WriterFrame* frame, const HtttpMessage* resp
     return 0;
 }
 
-typedef struct {
-    bool is_method_owned;
-    bool is_path_owned;
-    bool is_reason_owned;
-    bool is_key_owned[HTTTP_HEADER_MAX];
-    bool is_value_owned[HTTTP_HEADER_MAX];
-    bool is_body_owned;
-} HtttpMessageFieldOwnership;
-
-static void htttp_message_free(HtttpMessage* message, const HtttpMessageFieldOwnership* ownership) {
-    if (message->is_request) {
-        if (ownership->is_method_owned) 
-            free((void*)message->request.method);
-        if (ownership->is_path_owned) 
-            free((void*)message->request.path);
-        for (size_t i = 0; i < message->request.header_count; i++) {
-            if (ownership->is_key_owned[i])
-                free((void *)message->request.header[i].key);
-            if (ownership->is_value_owned[i])
-                free((void *)message->request.header[i].value);
-        }
-        if (ownership->is_body_owned)
-            free((void *)message->request.body);
-    }
-    else {
-        if (ownership->is_reason_owned)
-            free((void *)message->response.reason);
-        for (size_t i = 0; i < message->response.header_count; i++) {
-            if (ownership->is_key_owned[i])
-                free((void *)message->response.header[i].key);
-            if (ownership->is_value_owned[i])
-                free((void *)message->response.header[i].value);
-        }
-        if (ownership->is_body_owned)
-            free((void *)message->response.body);
-    }
-}
-
-static int player_handle_request(PlayerFdData* player, HtttpMessage* request, HtttpMessage* response, HtttpMessageFieldOwnership* ownership) {
-    (void)request; (void)player;
-    HtttpMessage new_response = {
-        {
-            .response = {
-                200,
-                "OK",
-                {
-                    {
-                        "Content-Length",
-                        "0",
-                    },
-                    {
-                        "Content-Type",
-                        "text/plain",
-                    },
-                },
-                2,
-                NULL,
-                0,
-            }
-        },
-        false,
-    };
-    HtttpMessageFieldOwnership new_ownership = {
-        false,
-        false,
-        false,
-        {false, false,},
-        {false, false,},
-        false,
-    };
-    *response = new_response;
-    *ownership = new_ownership;
-    return 0;
-}
-
 /*!
     @return -1 if the client should be closed, 0 otherwise 
 */
-static int player_handle_request_frame(PlayerFdData* player, const ReaderFrame* frame) {
+static int player_handle_request_frame(PlayerFdData* player, const ReaderFrame* frame, Server* server) {
     HtttpMessage request;
     unsigned char* request_buf;
     if (htttp_message_from_frame(&request, &request_buf, frame, &player->key) == -1) {
         return -1;
     }
 
+    if (!request.is_request) {
+        free(request_buf);
+        return 0;
+    }
+
     HtttpMessage response = {0};
-    HtttpMessageFieldOwnership ownership = {0};
-    int val = player_handle_request(player, &request, &response, &ownership);
+    response.is_request = false;
+    HtttpMessageOwnership ownership = {0};
+    int val = player_handle_request(player, &request.request, server, &response.response, &ownership);
     if (val == -1) {
         free(request_buf);
         return 0;
@@ -314,7 +246,7 @@ static int player_process_single_frame(Server* server, PlayerFdData* player, Rea
         return player_handle_session_key(player, frame, &server->credential);
         
         case PLAYER_AUTH_DONE:
-        return player_handle_request_frame(player, frame);
+        return player_handle_request_frame(player, frame, server);
         
         default:
         assert(false);

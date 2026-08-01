@@ -1,3 +1,4 @@
+#include "cJSON.h"
 #include "common.h"
 #include "config_var.h"
 #include "htttp.h"
@@ -6,6 +7,7 @@
 #include <netdb.h>
 #include <netinet/in.h>
 #include <openssl/x509.h>
+#include <sched.h>
 #include <stdbool.h>
 #include <stdint.h>
 #include <stdio.h>
@@ -20,32 +22,59 @@
 
 #define MAX_MESSAGE_SIZE 4096
 
-static DTOR_WRAPPER_DEFINE(htttp_message_free)
 static DTOR_WRAPPER_DEFINE(free)
+static DTOR_WRAPPER_DEFINE(cJSON_Delete)
 
-int htttp_loop(int fd, const char* buf, size_t buf_len, SessionKey* shared_key) {
+static int htttp_loop(int fd, const char* buf, size_t buf_len, SessionKey* shared_key) {
+    (void)buf_len;
+
     DTOR_DEFINE(dtor, 10);
-    
-    htttp_message_t message;
-    htttp_message_init(&message);
-    message.kind = HTTTP_REQUEST;
-    strncpy(message.path, "/insert/path/here", HTTTP_MAX_PATH);
-    strncpy(message.method, "SOMEMETHOD", HTTTP_MAX_METHOD);
+    cJSON* const json = cJSON_CreateStringReference(buf);
+    if (json == NULL) {
+        fprintf(stderr, "Cannot malloc\n");
+        DTOR_RETURN(dtor, -1);
+    }
+    DTOR_INSERT(dtor, cJSON_Delete, json);
 
-    char val_buf[32] = {0};
-    int val_buf_written = snprintf(val_buf, sizeof(val_buf), "%zu", buf_len);
-    if ((size_t)val_buf_written >= sizeof(val_buf) || val_buf_written < 0) {
+    char* const json_buf = cJSON_Print(json);
+    if (json_buf == NULL) {
+        fprintf(stderr, "Cannot encode json\n");
+        DTOR_RETURN(dtor, -1);
+    }
+    DTOR_INSERT(dtor, free, json_buf);
+
+    size_t json_len = strlen(json_buf);
+    char json_len_buf[32] = {0};
+    int val_buf_written = snprintf(json_len_buf, sizeof(json_len_buf), "%zu", json_len);
+    if ((size_t)val_buf_written >= sizeof(json_len_buf) || val_buf_written < 0) {
         fprintf(stderr, "Message too big\n");
         DTOR_RETURN(dtor, -1);
     }
 
-    htttp_add_header(&message, "Content-Length", val_buf);
-    htttp_set_body(&message, buf, buf_len);
-    DTOR_INSERT(dtor, htttp_message_free, &message);
+    HtttpMessage message = {
+        .request = {
+            "SET_PLAYER_NAME", 
+            "",
+            {
+                {
+                    "Content-Length",
+                    json_len_buf,
+                },
+                {
+                    "Content-Type",
+                    "application/tetris-command",
+                },
+            },
+            2,
+            (const unsigned char*)json_buf,
+            json_len,
+        },
+        .is_request = true,
+    };
 
-    unsigned char* message_buf;
     size_t message_buf_length;
-    if (htttp_serialize(&message, &message_buf, &message_buf_length) == -1) {
+    unsigned char* const message_buf = htttp_serialize(&message, &message_buf_length);
+    if (message_buf == NULL) {
         DTOR_RETURN(dtor, -1);
     }
     DTOR_INSERT(dtor, free, message_buf);
@@ -61,7 +90,7 @@ int htttp_loop(int fd, const char* buf, size_t buf_len, SessionKey* shared_key) 
     DTOR_RETURN(dtor, 0);
 }
 
-int htttp_receive(int fd, htttp_message_t* message, unsigned char (*shared_key)[SESSION_KEY_LEN]) {
+int htttp_receive(int fd, HtttpMessage* message, unsigned char (*shared_key)[SESSION_KEY_LEN], unsigned char** msg_buf) {
     DTOR_DEFINE(dtor, 10);
     uint32_t length;
     unsigned char* msg = tetrish_recv_frame(fd, &length, shared_key);
@@ -69,27 +98,27 @@ int htttp_receive(int fd, htttp_message_t* message, unsigned char (*shared_key)[
         fprintf(stderr, "cannot decrypt message");
         DTOR_RETURN(dtor, -1);
     }
-    DTOR_INSERT(dtor, free, msg);
-
-    htttp_message_init(message);
+    
     if (htttp_parse(msg, length, message) == -1) {
         fprintf(stderr, "cannot parse message");
+        free(msg);
         DTOR_RETURN(dtor, -1);
     }
-    
+
+    *msg_buf = msg;    
     DTOR_RETURN(dtor, 0);
 }
 
-DTOR_WRAPPER_DEFINE(config_var_free)
+static DTOR_WRAPPER_DEFINE(config_var_free)
 
 static void close_ptr(int* fd) {
     close(*fd);
 }
 
-DTOR_WRAPPER_DEFINE(close_ptr)
-DTOR_WRAPPER_DEFINE(freeaddrinfo)
+static DTOR_WRAPPER_DEFINE(close_ptr)
+static DTOR_WRAPPER_DEFINE(freeaddrinfo)
 
-int prepare_socket(int port, const char* address) {
+static int prepare_socket(int port, const char* address) {
     DTOR_DEFINE(dtor, 10);
     
     struct addrinfo hints = {0};
@@ -184,13 +213,29 @@ int main() {
             break;
         }
 
-        htttp_message_t reply;
-        if (htttp_receive(sockfd, &reply, &shared_key) == -1) {
+        HtttpMessage reply;
+        unsigned char* reply_buf;
+        if (htttp_receive(sockfd, &reply, &shared_key, &reply_buf) == -1) {
             break;
         }
 
-        printf("Server response: %d %s %s\n", reply.status, reply.reason, reply.body);
-        htttp_message_free(&reply);
+        if (reply.is_request) {
+            if (reply.request.body_len == 0) {
+                printf("Server request: %s %s (empty body)\n", reply.request.method, reply.request.path);
+            }
+            else {
+                printf("Server request: %s %s %.*s\n", reply.request.method, reply.request.path, (int)reply.request.body_len, reply.request.body);
+            }
+        }
+        else {
+            if (reply.response.body_len == 0) {
+                printf("Server response: %d %s (empty body)\n", reply.response.status, reply.response.reason);
+            }
+            else {
+                printf("Server response: %d %s %.*s\n", reply.response.status, reply.response.reason, (int)reply.response.body_len, reply.response.body);
+            }
+        }
+        free(reply_buf);
     }
 
     DTOR_RETURN(dtor, 0);
