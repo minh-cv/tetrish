@@ -1,14 +1,22 @@
 #ifndef TETRISH_TETRISD_SERVER_H
 #define TETRISH_TETRISD_SERVER_H
-#include "type.h"
 
-#define SPAN_ELEM_TYPE struct epoll_event
-#define SPAN_TYPEDEF EpollEvents
-#include "collection/span.h"
+#include "acceptor.h"
+#include "auth.h"
+#include "config_var.h"
+#include "epoll.h"
+#include "player_io.h"
 
-void server_free(Server* server);
+typedef struct {
+    struct config_var cfg;
+    Acceptor acceptor;
+    EpollData epoll;
+    PlayerIo player_io;
+    AuthData auth;
+} Server;
+
 int server_init(Server* server);
-void server_reload_config(Server* server);
-int server_poll(Server* server, EpollEvents* evs);
+void server_free(Server* server);
+void server_tick(Server* server);
 
 #endif

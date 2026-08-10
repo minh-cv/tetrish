@@ -13,3 +13,4 @@ tmp/
 compile_commands.json
 .tetrishrc
 archive/
+.claude/
