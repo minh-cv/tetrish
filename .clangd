@@ -1,0 +1,7 @@
+Documentation:
+  CommentFormat: Doxygen
+Diagnostics:
+  Includes:
+    IgnoreHeader:
+      - "asm-generic/.*"
+      - "bits/.*"
