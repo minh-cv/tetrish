@@ -9,6 +9,7 @@
 #include "logger_layer.h"
 #include "player_io.h"
 #include "app_layer.h"
+#include "ctl.h"
 
 typedef struct {
     struct config_var cfg;
@@ -27,10 +28,23 @@ typedef struct {
     */
     int room_timerfd;
     uint64_t broadcast_counter;
+
+    CtlData ctl;
+    ServerLifecycle lifecycle;
+    time_t started_at;
 } Server;
 
 int server_init(Server* server);
 void server_free(Server* server);
 void server_tick(Server* server);
+
+/*!
+    @brief whether the loop should end
+
+    True once a shutdown was acknowledged and either the control reply is out
+    or the grace deadline passed. The deadline exists because a tetrisctl that
+    dies between sending and reading would otherwise wedge the daemon.
+*/
+bool server_should_stop(const Server* server);
 
 #endif

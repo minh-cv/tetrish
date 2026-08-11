@@ -44,7 +44,7 @@ int main(void) {
         return EXIT_FAILURE;
     }
 
-    while (running) {
+    while (running && !server_should_stop(&server)) {
         server_tick(&server);
     }
 

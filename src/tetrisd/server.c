@@ -16,6 +16,7 @@ static DTOR_WRAPPER_DEFINE(PlayerIo_free)
 static DTOR_WRAPPER_DEFINE(AuthData_free)
 static DTOR_WRAPPER_DEFINE(HtttpData_free)
 static DTOR_WRAPPER_DEFINE(AppData_free)
+static DTOR_WRAPPER_DEFINE(CtlData_free)
 
 /*
     Bring the logger up and register whichever fd it ended up with. Both fds are
@@ -215,6 +216,24 @@ int server_init(Server* server) {
         DTOR_ERR_RETURN(errdtor, dtor, -1);
     }
 
+    server->lifecycle = SERVER_RUNNING;
+    server->started_at = time(NULL);
+    if (CtlData_init(&server->ctl, server->cfg.ctl_ipc, server->cfg.ctl_timeout_ms) == -1) {
+        DTOR_ERR_RETURN(errdtor, dtor, -1);
+    }
+    DTOR_INSERT(errdtor, CtlData_free, &server->ctl);
+
+    /*
+        Registered so an arriving control connection wakes an idle daemon. The
+        tick drains the listener itself rather than reading it out of the event
+        array, so a full array of player fds cannot delay a control command
+        either.
+    */
+    if (server->ctl.listen_fd >= 0 && (size_t)server->ctl.listen_fd < server->cfg.max_fds &&
+        Epoll_accept_one(&server->epoll, server->ctl.listen_fd, EPOLL_ENTRY_CONTROL, EPOLLIN) == -1) {
+        DTOR_ERR_RETURN(errdtor, dtor, -1);
+    }
+
     // the piece bags are shuffled with rand(); without this every room in
     // every run of the daemon would see the same sequence
     srand((unsigned)time(NULL) ^ (unsigned)getpid());
@@ -232,6 +251,10 @@ int server_init(Server* server) {
 
 void server_free(Server* server) {
     LOGGER_LOG(LOG_INFO, "server", "tetrisd stopping");
+    if (server->ctl.listen_fd != -1) {
+        Epoll_erase_one(&server->epoll, server->ctl.listen_fd);
+    }
+    CtlData_free(&server->ctl);
     if (server->room_timerfd != -1) {
         Epoll_erase_one(&server->epoll, server->room_timerfd);
         close(server->room_timerfd);
@@ -248,16 +271,87 @@ void server_free(Server* server) {
     config_var_free(&server->cfg);
 }
 
+/*
+    Counts what a control peer asks about. Only built when a control
+    connection is actually waiting, so an idle daemon pays nothing for it.
+*/
+static ServerStatus server_status(const Server* server) {
+    size_t authenticated = 0;
+    for (size_t i = 0; i < SparseSet_AuthEntry_size(&server->auth.entries); i++) {
+        if (SparseSet_AuthEntry_at_idx(&server->auth.entries, i)->auth_state == AUTH_DONE) {
+            authenticated++;
+        }
+    }
+
+    size_t rooms = 0;
+    for (size_t i = 0; i < server->app.world.room_capacity; i++) {
+        if (server->app.world.rooms[i].present) {
+            rooms++;
+        }
+    }
+
+    const ServerStatus status = {
+        .pid = getpid(),
+        .lifecycle = server->lifecycle,
+        .address = server->cfg.address,
+        .port = server->cfg.port,
+        .uptime_seconds = (long)(time(NULL) - server->started_at),
+        .players_connected = SparseSet_PlayerIoEntry_size(&server->player_io.entries),
+        .players_authenticated = authenticated,
+        .rooms = rooms,
+        .max_fds = server->cfg.max_fds,
+        .tick_hz = server->cfg.tick_hz,
+        .accepting = server->lifecycle == SERVER_RUNNING,
+    };
+    return status;
+}
+
+static void ctl_tick(Server* server) {
+    const ServerStatus status = server_status(server);
+    CtlData_serve(&server->ctl, &status, server->cfg.max_ctl_fds);
+
+    if (server->ctl.drain_requested && server->lifecycle == SERVER_RUNNING) {
+        server->ctl.drain_requested = false;
+        server->lifecycle = SERVER_DRAINING;
+        LOGGER_LOG(LOG_WARN, "server", "draining: no new players will be admitted");
+    }
+    if (server->ctl.shutdown_requested && server->lifecycle != SERVER_STOPPING) {
+        server->ctl.shutdown_requested = false;
+        server->lifecycle = SERVER_STOPPING;
+        LOGGER_LOG(LOG_WARN, "server", "shutting down");
+    }
+}
+
+/*
+    No grace period is needed here, unlike in a design where the control reply
+    is queued for a later write pass: CtlData_serve writes the reply on the
+    connection before it returns, so by the time the lifecycle moves the
+    acknowledgement is already on its way.
+*/
+bool server_should_stop(const Server* server) {
+    return server->lifecycle == SERVER_STOPPING;
+}
+
 void server_tick(Server* server) {
+    // before the poll, so a shutdown that arrived while the daemon was busy is
+    // observed in the same tick it landed rather than after the next player
+    // event
+    ctl_tick(server);
+
     EpollSignals signals = {0};
     if (Epoll_poll(&server->epoll, &server->player_io.players_reading,
                    &server->player_io.players_writing, &signals) == -1) {
         return;
     }
 
-    bool should_stop_accepting = false;
-    if (signals.acceptor_readable) {
-        Acceptor_accept(&server->acceptor, server->cfg.max_fds, &server->acceptor.accepted, &should_stop_accepting);
+    // a draining daemon keeps its rooms running but admits nobody new
+    bool should_stop_accepting = server->lifecycle != SERVER_RUNNING;
+    if (signals.acceptor_readable && server->lifecycle == SERVER_RUNNING) {
+        // the reservation keeps player connections from consuming the last
+        // table slots, which is what the control accept would otherwise find
+        // missing exactly when it is needed most
+        Acceptor_accept(&server->acceptor, server->cfg.max_fds - server->cfg.max_ctl_fds,
+                        &server->acceptor.accepted, &should_stop_accepting);
         Epoll_accept(&server->epoll, &server->acceptor.accepted, EPOLL_ENTRY_PLAYER, EPOLLIN, &server->epoll.player_close_fds);
         // capacity contract: every layer's queues are accepted with the same
         // cfg.client_capacity and each stage emits at most one frame per

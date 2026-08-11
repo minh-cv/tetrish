@@ -131,6 +131,10 @@ int Epoll_poll(EpollData* data, Vec_Fd* player_read, Vec_Fd* player_write, Epoll
                 m_signals->logger_timer_expired = true;
             }
             break;
+        case EPOLL_ENTRY_CONTROL:
+            // readiness alone is the signal; the control listener is drained
+            // directly at the top of the tick, not through this array
+            break;
         case EPOLL_ENTRY_ROOM_TIMERFD:
             if (ev->events & EPOLLIN) {
                 m_signals->room_timer_expired = true;
