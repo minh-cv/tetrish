@@ -85,13 +85,14 @@ void server_tick(Server* server) {
     if (acceptor_readable) {
         Acceptor_accept(&server->acceptor, server->cfg.max_fds, &server->acceptor.accepted, &should_stop_accepting);
         Epoll_accept(&server->epoll, &server->acceptor.accepted, EPOLL_ENTRY_PLAYER, EPOLLIN, &server->epoll.player_close_fds);
+        // capacity contract: every layer's queues are accepted with the same
+        // cfg.client_capacity and each stage emits at most one frame per
+        // input frame, so no chained queue can overflow; the stages state
+        // this as a precondition and fail the fd on violation
         PlayerIo_accept(&server->player_io, &server->acceptor.accepted, &server->epoll.player_close_fds,
                         server->cfg.client_capacity);
         AuthData_accept(&server->auth, &server->acceptor.accepted, &server->epoll.player_close_fds,
                         server->cfg.client_capacity);
-        // all three layers' queues share cfg.client_capacity: each stage
-        // emits at most one frame per input frame, so no chained queue can
-        // overflow. HtttpData_parse and HtttpData_serialize rely on this tie.
         HtttpData_accept(&server->htttp, &server->acceptor.accepted, &server->epoll.player_close_fds,
                          server->cfg.client_capacity);
     }

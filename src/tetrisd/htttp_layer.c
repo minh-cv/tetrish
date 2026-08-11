@@ -145,7 +145,7 @@ void HtttpData_close(HtttpData* data, const SparseSet_bool* close_fds) {
 
 void HtttpData_parse(HtttpData* data, const SparseSet_AuthFrameQueue* m_decrypt_qs,
                      SparseSet_HtttpParsedMessageQueue* m_parsed_qs,
-                     const SparseSet_bool* err_fds) {
+                     SparseSet_bool* err_fds) {
     for (size_t i = 0; i < SparseSet_AuthFrameQueue_size(m_decrypt_qs); i++) {
         const size_t fd = SparseSet_AuthFrameQueue_key_at_idx(m_decrypt_qs, i);
         if (SparseSet_bool_contains(err_fds, fd)) {
@@ -161,9 +161,18 @@ void HtttpData_parse(HtttpData* data, const SparseSet_AuthFrameQueue* m_decrypt_
         HtttpParsedMessageQueue* pq = SparseSet_HtttpParsedMessageQueue_value_at(m_parsed_qs, fd);
         const size_t pending = AuthFrameQueue_size(q);
         const size_t room = HtttpParsedMessageQueue_capacity(pq) - HtttpParsedMessageQueue_size(pq);
+        // overflow violates the capacity contract (see server_tick's accept
+        // fan-out); the fd is failed
         assert(pending <= room && "decrypt_qs and parsed_qs share cfg.client_capacity");
-        const size_t count = pending < room ? pending : room;
-        if (count == 0) {
+        if (pending > room) {
+            *SparseSet_bool_activate(err_fds, fd) = true;
+            if (SparseSet_HtttpParsedMessageQueue_contains(m_parsed_qs, fd)) {
+                HtttpParsedMessageQueue_reset(SparseSet_HtttpParsedMessageQueue_get(m_parsed_qs, fd));
+                SparseSet_HtttpParsedMessageQueue_erase(m_parsed_qs, fd);
+            }
+            continue;
+        }
+        if (pending == 0) {
             continue;
         }
 
@@ -210,7 +219,7 @@ void HtttpData_respond_placeholder(HtttpData* data, const SparseSet_HtttpParsedM
 
         bool failed = false;
         const size_t count = HtttpParsedMessageQueue_size(q);
-HtttpOutboundMessageQueue* out = SparseSet_HtttpOutboundMessageQueue_activate(m_response_qs, fd);
+        HtttpOutboundMessageQueue* out = SparseSet_HtttpOutboundMessageQueue_activate(m_response_qs, fd);
 
         for (size_t j = 0; j < count; j++) {
             const HtttpParsedMessage* parsed = HtttpParsedMessageQueue_at(q, j);

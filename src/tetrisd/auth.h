@@ -103,16 +103,21 @@ void AuthData_close(
 
     For each decrypted frame, 
 
-    @pre  No entry of @p read_qs is already marked in @p err_fds 
+    @pre  No entry of @p read_qs is already marked in @p err_fds
+    @pre  @p read_qs and @p m_decrypted slots were accepted with the same
+          queue capacity (see server_tick's accept fan-out), so the
+          one-frame-per-input output always fits.
 
+    @post A frame with a non-OK ReaderFrameStatus is forwarded into its fd's slot in @p m_decrypted only if that fd's auth state is `AUTH_DONE`; if the handshake is not complete, the fd is failed instead.
     @post For each failed fd in @p read_qs , it is newly
           marked in @p err_fds with its slot in @p m_decrypted inactive, along with frames there freed. Pre-existing entries of @p err_fds are preserved.
     @post For each failed fd in @p read_qs , its slot in @p handshake_out is drained and inactive, regardless of whether the failure was in a handshake or a decrypt step. This function owns the fd's slot in @p handshake_out until the fd's pass commits; encrypt appends to it only afterwards, so the slot holds handshake frames only and draining it discards no other layer's output.
     @post Entry in @p m_decrypted is active iff its queue has size of at least 1.
 
-    @note If the precondition is violated, the overlapping entries are
-          currently skipped. This behavior is not part of the contract
-          and must not be relied upon.
+    @note If the first precondition is violated, the overlapping entries
+          are currently skipped. If the second is violated, the fd is
+          currently failed like an operation failure. Neither behavior is
+          part of the contract and must not be relied upon.
 */
 void AuthData_handshake_or_decrypt(
     AuthData* data,

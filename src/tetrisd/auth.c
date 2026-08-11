@@ -221,15 +221,12 @@ static int handshake_or_decrypt_frame(AuthData* data, AuthEntry* entry, const Re
         }
         AuthFrameQueue* out = SparseSet_AuthFrameQueue_value_at(m_decrypted_out, fd);
         const int err = AuthFrameQueue_push_back(out, &decrypted);
-        // read_qs and decrypt_qs share cfg.client_capacity and decryption
-        // emits at most one frame per input frame, so the push cannot fail;
-        // the release-mode fallback drops the frame instead of failing the
-        // fd, and the client's timeout will retransmit the request.
+        // overflow violates the capacity contract (see server_tick's accept
+        // fan-out); the fd is failed
         assert(err != -1);
         if (err == -1) {
-            LOGGER_LOG(LOG_WARN, "auth", "decrypt queue full, dropping frame for fd=%zu", fd);
             free(plain);
-            return 0;
+            return -1;
         }
         SparseSet_AuthFrameQueue_activate(m_decrypted_out, fd);
         return 0;
@@ -258,20 +255,19 @@ void AuthData_handshake_or_decrypt(AuthData* data, const SparseSet_ReaderFrameQu
             const ReaderFrame* frame = ReaderFrameQueue_at(q, j);
 
             if (frame->status != READER_FRAME_OK) {
-if (entry->auth_state != AUTH_DONE) {
+                if (entry->auth_state != AUTH_DONE) {
                     failed = true;
                     break;
                 }
                 const AuthFrame forwarded = { *frame, AUTH_FRAME_OK };
                 AuthFrameQueue* out = SparseSet_AuthFrameQueue_value_at(m_decrypted_out, fd);
                 const int err = AuthFrameQueue_push_back(out, &forwarded);
-                // same capacity tie as the decrypted-frame push below; the
-                // release-mode fallback drops the frame (error-status frames
-                // carry no content) instead of failing the fd.
+                // overflow violates the capacity contract (see server_tick's
+                // accept fan-out); the fd is failed
                 assert(err != -1);
                 if (err == -1) {
-                    LOGGER_LOG(LOG_WARN, "auth", "decrypt queue full, dropping frame for fd=%zu", fd);
-                    continue;
+                    failed = true;
+                    break;
                 }
                 SparseSet_AuthFrameQueue_activate(m_decrypted_out, fd);
                 continue;

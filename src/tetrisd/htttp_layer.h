@@ -124,15 +124,13 @@ void HtttpData_close(
 
     A frame is parsed only if both its AuthFrameStatus and its embedded
     ReaderFrameStatus are OK; otherwise HTTTP_LAYER_PARSE_ERROR travels
-    in-band in @p m_parsed_qs . Parsing has no operation-failure path, so
-    no fd is ever marked in @p err_fds here.
+    in-band in @p m_parsed_qs . Within the contract, parsing has no
+    operation-failure path, so no fd is ever marked in @p err_fds here.
 
     @pre  No entry of @p m_decrypt_qs is already marked in @p err_fds
     @pre  @p m_decrypt_qs and @p m_parsed_qs slots were accepted with the
           same queue capacity (both receive cfg.client_capacity, see
-          server_tick's accept fan-out), so the output always fits; the
-          clamp on the output queue's remaining room is the release-mode
-          fallback.
+          server_tick's accept fan-out), so the output always fits.
 
     @post Frame contents in @p m_decrypt_qs may be modified in place
           (parsing splits them into strings); their ownership does not
@@ -140,14 +138,16 @@ void HtttpData_close(
     @post Entry in @p m_parsed_qs is active iff its queue has size of at least 1.
 
     @note If the first precondition is violated, the overlapping entries
-          are currently skipped. This behavior is not part of the contract
-          and must not be relied upon.
+          are currently skipped. If the second is violated, the fd is
+          currently failed (marked in @p err_fds with its slot in
+          @p m_parsed_qs inactive). Neither behavior is part of the
+          contract and must not be relied upon.
 */
 void HtttpData_parse(
     HtttpData* data,
     const SparseSet_AuthFrameQueue* m_decrypt_qs,
     SparseSet_HtttpParsedMessageQueue* m_parsed_qs,
-    const SparseSet_bool* err_fds
+    SparseSet_bool* err_fds
 );
 
 /*!
@@ -162,6 +162,9 @@ void HtttpData_parse(
     connection stays open either way.
 
     @pre  No entry of @p m_parsed_qs is already marked in @p err_fds
+    @pre  @p m_parsed_qs and @p m_response_qs slots were accepted with the
+          same queue capacity (see server_tick's accept fan-out), so the
+          output always fits.
 
     @post For each failed fd in @p m_parsed_qs , it is newly marked in
           @p err_fds with its slot in @p m_response_qs inactive, along
@@ -169,9 +172,10 @@ void HtttpData_parse(
           are preserved.
     @post Entry in @p m_response_qs is active iff its queue has size of at least 1.
 
-    @note If the precondition is violated, the overlapping entries are
-          currently skipped. This behavior is not part of the contract
-          and must not be relied upon.
+    @note If the first precondition is violated, the overlapping entries
+          are currently skipped. If the second is violated, the fd is
+          currently failed like an operation failure. Neither behavior is
+          part of the contract and must not be relied upon.
 
     TODO: replace with the real application layer between @c parsed_qs and
     @c response_qs .
@@ -193,6 +197,9 @@ void HtttpData_respond_placeholder(
     fd, not an in-band condition.
 
     @pre  No entry of @p m_response_qs is already marked in @p err_fds
+    @pre  @p m_response_qs and @p m_auth_qs slots were accepted with the
+          same queue capacity (see server_tick's accept fan-out), so the
+          output always fits.
 
     @post For each failed fd in @p m_response_qs , it is newly marked in
           @p err_fds with its slot in @p m_auth_qs inactive, along with
@@ -200,9 +207,10 @@ void HtttpData_respond_placeholder(
           preserved.
     @post Entry in @p m_auth_qs is active iff its queue has size of at least 1. Frames appended there are owned by @p m_auth_qs and reclaimed by AuthData_reset.
 
-    @note If the precondition is violated, the overlapping entries are
-          currently skipped. This behavior is not part of the contract
-          and must not be relied upon.
+    @note If the first precondition is violated, the overlapping entries
+          are currently skipped. If the second is violated, the fd is
+          currently failed like an operation failure. Neither behavior is
+          part of the contract and must not be relied upon.
 */
 void HtttpData_serialize(
     HtttpData* data,
