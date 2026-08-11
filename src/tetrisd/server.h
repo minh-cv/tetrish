@@ -5,6 +5,7 @@
 #include "auth.h"
 #include "config_var.h"
 #include "epoll.h"
+#include "htttp_layer.h"
 #include "player_io.h"
 
 typedef struct {
@@ -13,6 +14,7 @@ typedef struct {
     EpollData epoll;
     PlayerIo player_io;
     AuthData auth;
+    HtttpData htttp;
 } Server;
 
 int server_init(Server* server);

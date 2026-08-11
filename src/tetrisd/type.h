@@ -8,6 +8,7 @@
     layer's own header.
 */
 
+#include "htttp.h" // IWYU pragma: keep
 #include "network/reader.h" // IWYU pragma: keep
 #include "network/writer.h" // IWYU pragma: keep
 #include <stdint.h>
@@ -62,6 +63,25 @@ typedef struct {
 
 #define SPARSE_SET_ELEM_TYPE AuthFrameQueue
 #define SPARSE_SET_TYPEDEF SparseSet_AuthFrameQueue
+#include "collection/sparse_set.h"
+
+/*
+    An outbound HTTTP message staged for serialization, with the ownership
+    mask htttp_message_free needs to reclaim it. Lives here rather than in
+    the htttp layer's header because the application layer produces this
+    state, so it crosses layers.
+*/
+typedef struct {
+    HtttpMessage message;
+    HtttpMessageOwnership ownership;
+} HtttpOutboundMessage;
+
+#define RING_BUFFER_ELEM_TYPE HtttpOutboundMessage
+#define RING_BUFFER_TYPEDEF HtttpOutboundMessageQueue
+#include "collection/ring_buffer.h"
+
+#define SPARSE_SET_ELEM_TYPE HtttpOutboundMessageQueue
+#define SPARSE_SET_TYPEDEF SparseSet_HtttpOutboundMessageQueue
 #include "collection/sparse_set.h"
 
 #endif

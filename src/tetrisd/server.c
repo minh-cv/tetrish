@@ -10,6 +10,7 @@ static DTOR_WRAPPER_DEFINE(Acceptor_free)
 static DTOR_WRAPPER_DEFINE(Epoll_free)
 static DTOR_WRAPPER_DEFINE(PlayerIo_free)
 static DTOR_WRAPPER_DEFINE(AuthData_free)
+static DTOR_WRAPPER_DEFINE(HtttpData_free)
 
 int server_init(Server* server) {
     DTOR_DEFINE(errdtor, 10);
@@ -52,6 +53,11 @@ int server_init(Server* server) {
     }
     DTOR_INSERT(errdtor, AuthData_free, &server->auth);
 
+    if (HtttpData_init(&server->htttp, server->cfg.max_fds) == -1) {
+        DTOR_ERR_RETURN(errdtor, dtor, -1);
+    }
+    DTOR_INSERT(errdtor, HtttpData_free, &server->htttp);
+
     if (Epoll_accept_one(&server->epoll, server->acceptor.listen_fd, EPOLL_ENTRY_ACCEPTOR, EPOLLIN) == -1) {
         DTOR_ERR_RETURN(errdtor, dtor, -1);
     }
@@ -60,6 +66,7 @@ int server_init(Server* server) {
 }
 
 void server_free(Server* server) {
+    HtttpData_free(&server->htttp);
     AuthData_free(&server->auth);
     PlayerIo_free(&server->player_io);
     Epoll_free(&server->epoll);
@@ -82,6 +89,11 @@ void server_tick(Server* server) {
                         server->cfg.client_capacity);
         AuthData_accept(&server->auth, &server->acceptor.accepted, &server->epoll.player_close_fds,
                         server->cfg.client_capacity);
+        // all three layers' queues share cfg.client_capacity: each stage
+        // emits at most one frame per input frame, so no chained queue can
+        // overflow. HtttpData_parse and HtttpData_serialize rely on this tie.
+        HtttpData_accept(&server->htttp, &server->acceptor.accepted, &server->epoll.player_close_fds,
+                         server->cfg.client_capacity);
     }
 
     PlayerIo_read(&server->player_io, &server->player_io.players_reading,
@@ -90,8 +102,16 @@ void server_tick(Server* server) {
     AuthData_handshake_or_decrypt(&server->auth, &server->player_io.read_qs, &server->auth.decrypt_qs,
                               &server->player_io.write_qs, &server->epoll.player_close_fds);
 
-    Htttp_respond(&server->auth.decrypt_qs, &server->auth.auth_qs,
-                  &server->epoll.player_close_fds);
+    HtttpData_parse(&server->htttp, &server->auth.decrypt_qs, &server->htttp.parsed_qs,
+                    &server->epoll.player_close_fds);
+
+    // TODO: placeholder until the real application layer sits between
+    // parsed_qs and response_qs
+    HtttpData_respond_placeholder(&server->htttp, &server->htttp.parsed_qs, &server->htttp.response_qs,
+                                  &server->epoll.player_close_fds);
+
+    HtttpData_serialize(&server->htttp, &server->htttp.response_qs, &server->auth.auth_qs,
+                        &server->epoll.player_close_fds);
 
     AuthData_encrypt(&server->auth, &server->auth.auth_qs, &server->player_io.write_qs,
                  &server->epoll.player_close_fds);
@@ -106,10 +126,12 @@ void server_tick(Server* server) {
 
     PlayerIo_close(&server->player_io, &server->epoll.player_close_fds);
     AuthData_close(&server->auth, &server->epoll.player_close_fds);
+    HtttpData_close(&server->htttp, &server->epoll.player_close_fds);
     Epoll_close(&server->epoll, &server->epoll.player_close_fds);
 
     Acceptor_reset(&server->acceptor);
     PlayerIo_reset(&server->player_io);
     AuthData_reset(&server->auth);
+    HtttpData_reset(&server->htttp);
     Epoll_reset(&server->epoll);
 }

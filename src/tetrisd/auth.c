@@ -219,13 +219,19 @@ static int handshake_or_decrypt_frame(AuthData* data, AuthEntry* entry, const Re
                 AUTH_FRAME_OK,
             };
         }
-        AuthFrameQueue* out = SparseSet_AuthFrameQueue_activate(m_decrypted_out, fd);
+        AuthFrameQueue* out = SparseSet_AuthFrameQueue_value_at(m_decrypted_out, fd);
         const int err = AuthFrameQueue_push_back(out, &decrypted);
+        // read_qs and decrypt_qs share cfg.client_capacity and decryption
+        // emits at most one frame per input frame, so the push cannot fail;
+        // the release-mode fallback drops the frame instead of failing the
+        // fd, and the client's timeout will retransmit the request.
         assert(err != -1);
         if (err == -1) {
+            LOGGER_LOG(LOG_WARN, "auth", "decrypt queue full, dropping frame for fd=%zu", fd);
             free(plain);
-            return -1;
+            return 0;
         }
+        SparseSet_AuthFrameQueue_activate(m_decrypted_out, fd);
         return 0;
     }
     }
@@ -253,13 +259,17 @@ void AuthData_handshake_or_decrypt(AuthData* data, const SparseSet_ReaderFrameQu
 
             if (frame->status != READER_FRAME_OK) {
                 const AuthFrame forwarded = { *frame, AUTH_FRAME_OK };
-                AuthFrameQueue* out = SparseSet_AuthFrameQueue_activate(m_decrypted_out, fd);
+                AuthFrameQueue* out = SparseSet_AuthFrameQueue_value_at(m_decrypted_out, fd);
                 const int err = AuthFrameQueue_push_back(out, &forwarded);
+                // same capacity tie as the decrypted-frame push below; the
+                // release-mode fallback drops the frame (error-status frames
+                // carry no content) instead of failing the fd.
                 assert(err != -1);
                 if (err == -1) {
-                    failed = true;
-                    break;
+                    LOGGER_LOG(LOG_WARN, "auth", "decrypt queue full, dropping frame for fd=%zu", fd);
+                    continue;
                 }
+                SparseSet_AuthFrameQueue_activate(m_decrypted_out, fd);
                 continue;
             }
             if (handshake_or_decrypt_frame(data, entry, frame, fd, m_decrypted_out, handshake_out) == -1) {
