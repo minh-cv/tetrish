@@ -56,6 +56,18 @@ typedef struct BoardState {
     GhostPiece ghost;
 } BoardState;
 
+/*!
+    @brief The line-clear and score tracker the spec asks to be visible.
+
+    @c last_clear is the size of the most recent clear rather than a running
+    total, so a renderer can announce "TETRIS" without keeping its own history.
+*/
+typedef struct ScoreState {
+    int lines_cleared;
+    int score;
+    int last_clear;
+} ScoreState;
+
 typedef struct MovementState {
     int last_offset_used;
     bool is_just_rotated;
@@ -72,6 +84,7 @@ typedef struct State {
     MovementState movement_state;
     int garbage_balance;
     int back_to_back_count;
+    ScoreState score_state;
 } State;
 
 typedef enum TSpinType {

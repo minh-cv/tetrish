@@ -123,6 +123,37 @@ void apply_attack(State* src, State* dest) {
     }
 }
 
+/*
+    Guideline-style scoring: a base per clear size, a larger base for a T-spin,
+    a flat bonus per combo step, and a 3/2 multiplier while the back-to-back
+    chain holds. The exact numbers are a design choice, not a spec requirement;
+    what the spec requires is that the count visibly moves on a clear.
+*/
+static int clear_score(int lines_cleared, TSpinType t_spin, int combo_counter, int back_to_back_count) {
+    static const int BASE[5] = {0, 100, 300, 500, 800};
+    static const int T_SPIN_BASE[4] = {400, 800, 1200, 1600};
+    static const int T_SPIN_MINI_BASE[3] = {100, 200, 400};
+
+    int score;
+    if (t_spin == T_SPIN_PROPER) {
+        score = T_SPIN_BASE[lines_cleared < 4 ? lines_cleared : 3];
+    }
+    else if (t_spin == T_SPIN_MINI) {
+        score = T_SPIN_MINI_BASE[lines_cleared < 3 ? lines_cleared : 2];
+    }
+    else {
+        score = BASE[lines_cleared < 5 ? lines_cleared : 4];
+    }
+
+    if (back_to_back_count > 0) {
+        score = score * 3 / 2;
+    }
+    if (combo_counter > 0) {
+        score += 50 * combo_counter;
+    }
+    return score;
+}
+
 static bool apply_lock_and_clear(State* s) {
     TSpinType t_spin = get_t_spin_type(&s->board_state.tetromino, s->movement_state.last_offset_used, s->movement_state.is_just_rotated, &s->board_state.board);
 
@@ -135,7 +166,11 @@ static bool apply_lock_and_clear(State* s) {
     else {
         s->combo_counter = -1;
     }
-    
+
+    s->score_state.last_clear = lines_cleared;
+    s->score_state.lines_cleared += lines_cleared;
+    s->score_state.score += clear_score(lines_cleared, t_spin, s->combo_counter, s->back_to_back_count);
+
     return apply_store_garbage(s, lines_cleared, t_spin);
 }
 
