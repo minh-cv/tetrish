@@ -22,6 +22,9 @@ set(ENABLE_CUSTOM_COMPILER_FLAGS OFF CACHE BOOL "" FORCE)
 add_subdirectory(external/cjson EXCLUDE_FROM_ALL)
 target_include_directories(cjson INTERFACE ${CMAKE_CURRENT_SOURCE_DIR}/external/cjson)
 
+add_library(cmdline src/libcmdline/cmdline.c)
+target_include_directories(cmdline PUBLIC include)
+
 add_library(tetrisbrain
     src/libtetrisbrain/control.c
     src/libtetrisbrain/state.c
@@ -81,6 +84,7 @@ set_target_properties(hash PROPERTIES OUTPUT_NAME "#")
 
 install(
     TARGETS
+        cmdline
         tetrisbrain
         tetrisctl
         tetrisd
