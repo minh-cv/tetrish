@@ -8,7 +8,6 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
-#include <sys/epoll.h>
 
 static DTOR_WRAPPER_DEFINE(free)
 static DTOR_WRAPPER_DEFINE(config_free)
