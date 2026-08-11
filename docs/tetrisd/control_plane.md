@@ -1,6 +1,9 @@
 # The control plane: `tetrisctl` and its integration into `tetrisd`
 
-Design document. Nothing here is implemented yet; `src/tetrisctl/main.c` is still `return 0`.
+**Status: implemented, in a smaller shape than this document proposes.** What
+shipped is described in "What was actually built" at the end; everything above
+that section is the original design, kept because the availability argument in
+it is the reason the smaller version is arranged the way it is.
 
 ## Requirements this design answers
 
@@ -256,3 +259,37 @@ target_link_libraries(tetrisctl PRIVATE cjson htttp common tetrissh config)
 5. `shutdown`, the lifecycle enum, `server_should_stop`, and the grace deadline.
 6. `drain`, `players`, `kick`.
 7. The flood test: saturate the TCP listener up to `max_fds - max_ctl_fds` and confirm `tetrisctl shutdown` still returns.
+
+## What was actually built
+
+`src/tetrisd/ctl.c` and `src/tetrisctl/` implement `status`, `drain` and
+`shutdown`. The transport, the socket-file lifecycle, the `SO_PEERCRED` check,
+the fd reservation, the lifecycle enum and `server_should_stop` are as designed
+above. Three things are not.
+
+**No second pipeline.** There is no `FrameIo` rename, no `ctl_epoll`, no
+`CtlData_lift`, and no control-side `HtttpData`. A control connection is
+accepted, read, answered and closed synchronously inside `CtlData_serve`. The
+whole point of the layered pipeline is to keep one slow peer from holding the
+loop, and that concern does not apply to a peer that is local, restricted to
+the daemon's own uid, capped at `max_ctl_fds` per tick, and bounded by
+`SO_RCVTIMEO`/`SO_SNDTIMEO`. Building a second instance of every layer to serve
+a one-shot request would have been machinery without a purpose.
+
+**Availability is argued differently.** The nested epoll exists in the design
+to guarantee the control fd is seen even when the player event array is full.
+The same guarantee comes for free once the control listener is drained
+*directly* at the top of every tick rather than read out of the event array:
+the listener is still registered in the player epoll, but only so an arriving
+connection wakes an idle daemon. The fd reservation is unchanged and does the
+same job.
+
+**No grace deadline.** `shutdown_grace_ms` is gone. The deadline exists in the
+design because the reply is queued for a later write pass and the daemon must
+not wait forever for it to drain. Here the reply is written before
+`CtlData_serve` returns, so by the time the lifecycle moves the acknowledgement
+is already gone and the loop can end immediately.
+
+`players`, `rooms`, `kick` and `reload` are not implemented. `status` already
+reports the player and room counts, which is what the spec asks for; the rest
+are additions and are listed in the README's limitations.

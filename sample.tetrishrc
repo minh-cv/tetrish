@@ -1,4 +1,53 @@
-PATH=/path/to/binary/directory:/usr/bin
+# Lines are executed by tetrish as shell commands at startup, and the same file
+# is read by the daemons as key=value configuration. A directive tetrish does
+# not recognise as a command is set as an environment variable; a line the
+# daemons do not recognise as a directive is ignored.
+
+PATH=/path/to/project/bin:/usr/bin
 
 setenv BACKUP_DIR=tmp
-setenv PROJECT_DIR=/path/to/root/directory
+setenv PROJECT_DIR=/path/to/project
+
+# --- required by the daemons ---
+listen_port=4321
+address=127.0.0.1
+cert_path=auth/server_signed.crt
+key_path=auth/private_key.pem
+ca_path=auth/cacsertificate.crt
+log_path=var/log/tetrisd_log.txt
+
+# IPC endpoints. Both are AF_UNIX paths and are subject to the ~108 byte
+# sun_path limit, so a deep project directory needs them pointed somewhere
+# shorter.
+log_ipc=var/socket/tetrislogd_logger
+ctl_ipc=var/socket/tetrisd_ctl
+
+# --- optional, with the defaults shown ---
+
+# tetrisd: connection table and event loop
+# max_fds=1024
+# max_events=64
+# client_capacity=8
+
+# tetrisd: game
+# max_rooms=128
+# tick_hz=60                     frames per second every running room advances
+# state_broadcast_divisor=2      one STATE push per this many frames
+# app_arena_capacity=1048576     bytes of per-tick body storage
+
+# tetrisd: control plane
+# max_ctl_fds=4                  concurrent control connections, and the number
+#                                of fds reserved for them
+# ctl_timeout_ms=200
+
+# tetrisd: log shipping
+# logger_capacity=512
+# logger_reconnect_seconds=5
+
+# tetrislogd
+# logd_max_clients=64
+
+# tetrisu
+# client_capacity=64
+# line_capacity=4096
+# frame_interval_ms=16

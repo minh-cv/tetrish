@@ -29,6 +29,10 @@ is additive. Where a decision was made for the sake of that, it is called out un
 These are assumptions, not facts read off the spec. If the spec at `pa/tetrish` contradicts one,
 that is the side to follow.
 
+* **The board is its own type, not `State`.** The view model holds a `GameView` decoded from the
+  `STATE` body, not a `libtetrisbrain` `State`. The server sends what a renderer needs, not a
+  simulation's internals, and half-filling a `State` would invite someone to simulate from it. The
+  client still links `tetrisbrain`, for the piece geometry the renderer needs and for nothing else.
 * **The server is authoritative, including in singleplayer.** `tetrisd` runs `libtetrisbrain`,
   advances it on its own tick, and pushes board state; `tetrisu` sends inputs and renders what it is
   told. Singleplayer is a room of one. The alternative — the client simulating locally and the
@@ -410,8 +414,9 @@ void InputData_read(InputData* data, InputEventQueue* m_event_q, ClientFault* fa
 int InputData_set_mode(InputData* data, InputMode mode);
 ```
 
-`cmdline_split` is the tokenizer from `docs/plan.md` step 1, in its own translation unit
-(`cmdline.h`/`cmdline.c`) precisely because the plan calls for `tetrish` to reuse it:
+`cmdline_split` is the tokenizer from `docs/plan.md` step 1. It is built as a shared static
+library (`src/libcmdline/`, `include/cmdline.h`) rather than a translation unit inside `tetrisu`,
+because `tetrish` links it too and a copy in each would be a second grammar waiting to drift:
 
 ```c
 /*!
@@ -484,9 +489,9 @@ typedef struct {
     int player_id;                // -1 until known
     bool connected;
 
-    State board;                  // last STATE push, libtetrisbrain's type
-    bool board_valid;
-    uint64_t board_seq;           // monotone, so the UI can skip redundant draws
+    GameView game;                // last STATE push, decoded (see state_codec.h)
+    bool game_valid;
+    uint64_t game_seq;            // monotone, so the UI can skip redundant draws
 
     TranscriptQueue transcript;   // shell lines and diagnostics, newest last
     bool dirty;                   // set on any change, cleared by UiData_render

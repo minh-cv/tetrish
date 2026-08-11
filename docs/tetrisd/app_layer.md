@@ -197,11 +197,17 @@ policy lives in `AppData_flush` and nowhere else.
 
 ## Wire mapping
 
-Commands are HTTTP requests with JSON bodies: `POST /player/name`,
-`GET /player/me`, `POST /room`, `POST /room/{code}/join`, `POST /room/leave`,
-`POST /room/start`, `POST /game/input`. Replies are ordinary responses —
-`201` for room creation, `409` for join-while-in-a-room, `403` for a non-host
-`start`, `404` for an unknown code, `400` for a malformed body.
+**Superseded by the spec.** This section originally proposed REST-shaped paths
+with JSON bodies. The spec fixes a method table instead — `JOIN`, `LEAVE`,
+`START`, `MOVE`, `ROTATE`, `DROP`, `STATE` — and fixes their paths and bodies,
+so that is what is implemented; see the protocol table in the README. Only the
+gaps the spec leaves are ours: `SET_PLAYER_NAME` and `WHOAMI` on `/player`,
+and `HOLD` alongside the other play methods.
+
+The status codes are unchanged from what this section said: `201` for room
+creation, `409` for join-while-in-a-room and for start-while-running, `403`
+for a non-host `START` or a `Player-Id` naming someone else, `404` for an
+unknown room, `400` for a malformed body.
 
 Server-initiated events go out as HTTTP *requests* (`EVENT /room/state`,
 `EVENT /room/members`, `EVENT /game/over`), not as responses. `HtttpMessage`
@@ -226,8 +232,30 @@ rules for that alone.
 
 ## Order of work
 
-1. `PlayerRef`/`World` skeleton, `set-name`/`whoami`, replies only, no rooms.
-2. Rooms and membership events — first fan-out, first use of `AppData_flush`.
-3. Timerfd, `RUNNING` rooms, `STATE` broadcast of a placeholder payload.
-4. `libtetrisbrain` behind the frame step; inputs and garbage.
-5. Host enforcement, room destruction, host transfer.
+1. ~~`PlayerRef`/`World` skeleton, `set-name`/`whoami`, replies only, no rooms.~~ done
+2. ~~Rooms and membership events — first fan-out, first use of `AppData_flush`.~~ done
+3. ~~Timerfd, `RUNNING` rooms, `STATE` broadcast of a placeholder payload.~~ done
+4. ~~`libtetrisbrain` behind the frame step; inputs and garbage.~~ done, except that
+   garbage is routed round-robin between seats of one room; cross-room transfer
+   is battle royale's problem.
+5. Host enforcement, room destruction, host transfer. Partly done: `START` is
+   host-only and a room is destroyed when its last seat leaves, but host
+   transfer is implicit (seat 0 inherits) rather than a command.
+
+Two departures from the plan above are worth recording.
+
+**Membership events.** Step 2 called for membership deltas fanned out to every
+member. They are not sent: the roster travels inside every `STATE` snapshot
+instead, and snapshots go to lobby rooms as well as running ones. That keeps
+`STATE` the only server-originated message, which is what the spec says, and it
+removes the whole class of "the client missed a delta and is now out of sync"
+problems at the cost of a slightly larger snapshot.
+
+**The close lag.** The one-tick-lag section below describes a persistent
+pending-event queue for effects produced during the close fan-out. It is not
+needed for the same reason: `world_close` emits nothing, because the departure
+is visible in the next snapshot anyway.
+
+**Effect bodies.** `AppEffect` carries its body as a range in a per-tick arena
+rather than inline, so an effect stays small enough to hold thousands of them
+while a `STATE` body can still be a kilobyte.
