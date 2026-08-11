@@ -48,13 +48,15 @@ typedef struct {
 #include "collection/ring_buffer.h"
 
 typedef enum {
-    AUTH_FRAME_OK,
-    AUTH_FRAME_DECRYPT_FAILURE,
-} AuthFrameStatus;
+    FRAME_OK,
+    FRAME_DECRYPT_ERROR,
+    FRAME_PAYLOAD_TOO_LARGE,
+    FRAME_HTTTP_PARSE_ERROR,
+} FrameStatus;
 
 typedef struct {
-    ReaderFrame frame;
-    AuthFrameStatus status;
+    ReaderFrameContent frame;
+    FrameStatus status;
 } AuthFrame;
 
 #define RING_BUFFER_ELEM_TYPE AuthFrame

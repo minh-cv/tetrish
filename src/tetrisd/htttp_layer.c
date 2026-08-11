@@ -1,6 +1,8 @@
 #include "htttp_layer.h"
 #include "dtor.h"
 #include "htttp.h"
+#include "network/writer.h"
+#include "type.h"
 #include "wire.h"
 #include <assert.h>
 #include <stdlib.h>
@@ -10,17 +12,13 @@ static DTOR_WRAPPER_DEFINE(SparseSet_HtttpEntry_free)
 static DTOR_WRAPPER_DEFINE(SparseSet_HtttpParsedMessageQueue_free)
 
 /*!
-    @see auth_queue_drain (auth.c) — intentional duplicate, used for the
-    serialize rollback path
+    @see player_io.c
 */
-static void auth_queue_drain(AuthFrameQueue* q) {
-    const size_t count = AuthFrameQueue_size(q);
+static void writer_queue_drain(WriterFrameQueue* q) {
+    const size_t count = WriterFrameQueue_size(q);
     for (size_t i = 0; i < count; i++) {
-        const AuthFrame* frame = AuthFrameQueue_front(q);
-        if (frame->status == AUTH_FRAME_OK && frame->frame.status == READER_FRAME_OK) {
-            free(frame->frame.content.ptr);
-        }
-        AuthFrameQueue_pop_front(q);
+        free((void*)WriterFrameQueue_front(q)->ptr);
+        WriterFrameQueue_pop_front(q);
     }
 }
 
@@ -182,17 +180,17 @@ void HtttpData_parse(HtttpData* data, const SparseSet_AuthFrameQueue* m_decrypt_
             HtttpParsedMessage parsed;
             memset(&parsed, 0, sizeof(parsed));
 
-            if (frame->status == AUTH_FRAME_OK && frame->frame.status == READER_FRAME_OK) {
-                if (htttp_parse(frame->frame.content.ptr, frame->frame.content.length, &parsed.message) == 0) {
-                    parsed.status = HTTTP_LAYER_PARSE_OK;
+            if (frame->status == FRAME_OK) {
+                if (htttp_parse(frame->frame.ptr, frame->frame.length, &parsed.message) == 0) {
+                    parsed.status = FRAME_OK;
                 }
                 else {
                     memset(&parsed.message, 0, sizeof(parsed.message));
-                    parsed.status = HTTTP_LAYER_PARSE_ERROR;
+                    parsed.status = FRAME_HTTTP_PARSE_ERROR;
                 }
             }
             else {
-                parsed.status = HTTTP_LAYER_PARSE_ERROR;
+                parsed.status = frame->status;
             }
 
             const int err = HtttpParsedMessageQueue_push_back(out, &parsed);
@@ -227,10 +225,29 @@ void HtttpData_respond_placeholder(HtttpData* data, const SparseSet_HtttpParsedM
             HtttpStatus status = HTTTP_STATUS_BAD_REQUEST;
             const char* body = NULL;
             size_t body_len = 0;
-            if (parsed->status == HTTTP_LAYER_PARSE_OK && parsed->message.is_request) {
-                status = HTTTP_STATUS_OK;
-                body = (const char*)parsed->message.request.body;
-                body_len = parsed->message.request.body_len;
+            switch (parsed->status) {
+            case FRAME_OK:
+                if (parsed->message.is_request) {
+                    status = HTTTP_STATUS_OK;
+                    body = (const char*)parsed->message.request.body;
+                    body_len = parsed->message.request.body_len;
+                }
+                break;
+            case FRAME_DECRYPT_ERROR:
+                status = HTTTP_STATUS_BAD_REQUEST;
+                body = "Cannot decrypt message";
+                body_len = strlen(body);
+                break;
+            case FRAME_PAYLOAD_TOO_LARGE:
+                status = HTTTP_STATUS_PAYLOAD_TOO_LARGE;
+                body = "Payload too large";
+                body_len = strlen(body);
+                break;
+            case FRAME_HTTTP_PARSE_ERROR:
+                status = HTTTP_STATUS_BAD_REQUEST;
+                body = "Cannot parse request";
+                body_len = strlen(body);
+                break;
             }
 
             HtttpOutboundMessage outbound;
@@ -261,7 +278,7 @@ void HtttpData_respond_placeholder(HtttpData* data, const SparseSet_HtttpParsedM
 }
 
 void HtttpData_serialize(HtttpData* data, const SparseSet_HtttpOutboundMessageQueue* m_response_qs,
-                         SparseSet_AuthFrameQueue* m_auth_qs,
+                         SparseSet_WriterFrameQueue* m_encrypt_qs,
                          SparseSet_bool* err_fds) {
     for (size_t i = 0; i < SparseSet_HtttpOutboundMessageQueue_size(m_response_qs); i++) {
         const size_t fd = SparseSet_HtttpOutboundMessageQueue_key_at_idx(m_response_qs, i);
@@ -277,8 +294,8 @@ void HtttpData_serialize(HtttpData* data, const SparseSet_HtttpOutboundMessageQu
 
         bool failed = false;
         const size_t count = HtttpOutboundMessageQueue_size(q);
-        AuthFrameQueue* out = SparseSet_AuthFrameQueue_activate(m_auth_qs, fd);
-        
+        WriterFrameQueue* out = SparseSet_WriterFrameQueue_activate(m_encrypt_qs, fd);
+
         for (size_t j = 0; j < count; j++) {
             const HtttpOutboundMessage* outbound = HtttpOutboundMessageQueue_at(q, j);
 
@@ -294,12 +311,12 @@ void HtttpData_serialize(HtttpData* data, const SparseSet_HtttpOutboundMessageQu
                 break;
             }
 
-            const AuthFrame response_frame = {
-                { { serialized, serialized_len }, READER_FRAME_OK },
-                AUTH_FRAME_OK,
+            const WriterFrame response_frame = {
+                serialized,
+                serialized_len,
             };
-            const int err = AuthFrameQueue_push_back(out, &response_frame);
-            assert(err != -1 && "response_qs and auth_qs share cfg.client_capacity");
+            const int err = WriterFrameQueue_push_back(out, &response_frame);
+            assert(err != -1 && "response_qs and encrypt_qs share cfg.client_capacity");
             if (err == -1) {
                 free(serialized);
                 failed = true;
@@ -309,9 +326,9 @@ void HtttpData_serialize(HtttpData* data, const SparseSet_HtttpOutboundMessageQu
 
         if (failed) {
             *SparseSet_bool_activate(err_fds, fd) = true;
-            if (SparseSet_AuthFrameQueue_contains(m_auth_qs, fd)) {
-                auth_queue_drain(SparseSet_AuthFrameQueue_get(m_auth_qs, fd));
-                SparseSet_AuthFrameQueue_erase(m_auth_qs, fd);
+            if (SparseSet_WriterFrameQueue_contains(m_encrypt_qs, fd)) {
+                writer_queue_drain(SparseSet_WriterFrameQueue_get(m_encrypt_qs, fd));
+                SparseSet_WriterFrameQueue_erase(m_encrypt_qs, fd);
             }
         }
     }

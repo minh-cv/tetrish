@@ -111,10 +111,10 @@ void server_tick(Server* server) {
     HtttpData_respond_placeholder(&server->htttp, &server->htttp.parsed_qs, &server->htttp.response_qs,
                                   &server->epoll.player_close_fds);
 
-    HtttpData_serialize(&server->htttp, &server->htttp.response_qs, &server->auth.auth_qs,
+    HtttpData_serialize(&server->htttp, &server->htttp.response_qs, &server->auth.encrypt_qs,
                         &server->epoll.player_close_fds);
 
-    AuthData_encrypt(&server->auth, &server->auth.auth_qs, &server->player_io.write_qs,
+    AuthData_encrypt(&server->auth, &server->auth.encrypt_qs, &server->player_io.write_qs,
                  &server->epoll.player_close_fds);
 
     PlayerIo_write(&server->player_io, &server->player_io.write_qs,

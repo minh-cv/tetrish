@@ -27,7 +27,7 @@ typedef struct {
 typedef struct {
     SparseSet_AuthEntry entries;
     TetrishCredential credential;
-    SparseSet_AuthFrameQueue auth_qs;
+    SparseSet_WriterFrameQueue encrypt_qs;
     SparseSet_AuthFrameQueue decrypt_qs;
 } AuthData;
 
@@ -143,7 +143,7 @@ void AuthData_handshake_or_decrypt(
 */
 void AuthData_encrypt(
     AuthData* data,
-    const SparseSet_AuthFrameQueue* m_auth_qs,
+    const SparseSet_WriterFrameQueue* m_encrypt_qs,
     SparseSet_WriterFrameQueue* out,
     SparseSet_bool* err_fds
 );

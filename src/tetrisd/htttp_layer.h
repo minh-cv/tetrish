@@ -3,22 +3,17 @@
 
 #include "type.h"
 
-typedef enum {
-    HTTTP_LAYER_PARSE_OK,
-    HTTTP_LAYER_PARSE_ERROR,
-} HtttpLayerParseStatus;
-
 /*!
-    @brief A decrypted frame parsed in place. On HTTTP_LAYER_PARSE_OK,
+    @brief A decrypted frame parsed in place. On FRAME_OK,
     @c message 's pointers are non-owning views into the decrypt_qs frame it
     was parsed from, valid until AuthData_reset reclaims that frame. There
-    is no ownership mask: htttp_parse never allocates. On
-    HTTTP_LAYER_PARSE_ERROR (transport-level error status on the input
-    frame, or malformed HTTTP), @c message is zeroed.
+    is no ownership mask: htttp_parse never allocates. On any other status
+    (transport-level error status on the input frame, or malformed HTTTP),
+    @c message is zeroed.
 */
 typedef struct {
     HtttpMessage message;
-    HtttpLayerParseStatus status;
+    FrameStatus status;
 } HtttpParsedMessage;
 
 #define RING_BUFFER_ELEM_TYPE HtttpParsedMessage
@@ -215,7 +210,7 @@ void HtttpData_respond_placeholder(
 void HtttpData_serialize(
     HtttpData* data,
     const SparseSet_HtttpOutboundMessageQueue* m_response_qs,
-    SparseSet_AuthFrameQueue* m_auth_qs,
+    SparseSet_WriterFrameQueue* m_encrypt_qs,
     SparseSet_bool* err_fds
 );
 

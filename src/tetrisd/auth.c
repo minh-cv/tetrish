@@ -1,6 +1,8 @@
 #include "auth.h"
 #include "dtor.h"
 #include "logger.h"
+#include "network/reader.h"
+#include "type.h"
 #include "wire.h"
 #include <assert.h>
 #include <stdlib.h>
@@ -8,14 +10,14 @@
 
 static DTOR_WRAPPER_DEFINE(tetrish_credential_free)
 static DTOR_WRAPPER_DEFINE(SparseSet_AuthEntry_free)
-static DTOR_WRAPPER_DEFINE(SparseSet_AuthFrameQueue_free)
+static DTOR_WRAPPER_DEFINE(SparseSet_WriterFrameQueue_free)
 
 static void auth_queue_drain(AuthFrameQueue* q) {
     const size_t count = AuthFrameQueue_size(q);
     for (size_t i = 0; i < count; i++) {
         const AuthFrame* frame = AuthFrameQueue_front(q);
-        if (frame->status == AUTH_FRAME_OK && frame->frame.status == READER_FRAME_OK) {
-            free(frame->frame.content.ptr);
+        if (frame->status == FRAME_OK) {
+            free(frame->frame.ptr);
         }
         AuthFrameQueue_pop_front(q);
     }
@@ -24,7 +26,7 @@ static void auth_queue_drain(AuthFrameQueue* q) {
 /*!
     @see writer_queue_drain (player_io.c) — intentional duplicate
 */
-static void handshake_queue_drain(WriterFrameQueue* q) {
+static void writer_queue_drain(WriterFrameQueue* q) {
     const size_t count = WriterFrameQueue_size(q);
     for (size_t i = 0; i < count; i++) {
         free((void*)WriterFrameQueue_front(q)->ptr);
@@ -51,10 +53,10 @@ int AuthData_init(AuthData* data, size_t max_entries, const char* key_path, cons
     }
     DTOR_INSERT(errdtor, SparseSet_AuthEntry_free, &data->entries);
 
-    if (SparseSet_AuthFrameQueue_init(&data->auth_qs, max_entries) == -1) {
+    if (SparseSet_WriterFrameQueue_init(&data->encrypt_qs, max_entries) == -1) {
         DTOR_ERR_RETURN(errdtor, dtor, -1);
     }
-    DTOR_INSERT(errdtor, SparseSet_AuthFrameQueue_free, &data->auth_qs);
+    DTOR_INSERT(errdtor, SparseSet_WriterFrameQueue_free, &data->encrypt_qs);
 
     if (SparseSet_AuthFrameQueue_init(&data->decrypt_qs, max_entries) == -1) {
         DTOR_ERR_RETURN(errdtor, dtor, -1);
@@ -64,10 +66,10 @@ int AuthData_init(AuthData* data, size_t max_entries, const char* key_path, cons
 }
 
 void AuthData_reset(AuthData* data) {
-    for (size_t i = 0; i < SparseSet_AuthFrameQueue_size(&data->auth_qs); i++) {
-        auth_queue_drain(SparseSet_AuthFrameQueue_at_idx(&data->auth_qs, i));
+    for (size_t i = 0; i < SparseSet_WriterFrameQueue_size(&data->encrypt_qs); i++) {
+        writer_queue_drain(SparseSet_WriterFrameQueue_at_idx(&data->encrypt_qs, i));
     }
-    SparseSet_AuthFrameQueue_reset(&data->auth_qs);
+    SparseSet_WriterFrameQueue_reset(&data->encrypt_qs);
 
     for (size_t i = 0; i < SparseSet_AuthFrameQueue_size(&data->decrypt_qs); i++) {
         auth_queue_drain(SparseSet_AuthFrameQueue_at_idx(&data->decrypt_qs, i));
@@ -79,16 +81,16 @@ void AuthData_free(AuthData* data) {
     for (size_t i = 0; i < SparseSet_AuthEntry_size(&data->entries); i++) {
         const size_t fd = SparseSet_AuthEntry_key_at_idx(&data->entries, i);
 
-        AuthFrameQueue* aq = SparseSet_AuthFrameQueue_value_at(&data->auth_qs, fd);
-        auth_queue_drain(aq);
-        AuthFrameQueue_free(aq);
+        WriterFrameQueue* aq = SparseSet_WriterFrameQueue_value_at(&data->encrypt_qs, fd);
+        writer_queue_drain(aq);
+        WriterFrameQueue_free(aq);
 
         AuthFrameQueue* dq = SparseSet_AuthFrameQueue_value_at(&data->decrypt_qs, fd);
         auth_queue_drain(dq);
         AuthFrameQueue_free(dq);
     }
     SparseSet_AuthFrameQueue_free(&data->decrypt_qs);
-    SparseSet_AuthFrameQueue_free(&data->auth_qs);
+    SparseSet_WriterFrameQueue_free(&data->encrypt_qs);
     SparseSet_AuthEntry_free(&data->entries);
     tetrish_credential_free(&data->credential);
 }
@@ -107,14 +109,14 @@ void AuthData_accept(AuthData* data, const Vec_Fd* fds, SparseSet_bool* err_fds,
             continue;
         }
 
-        AuthFrameQueue* aq = SparseSet_AuthFrameQueue_value_at(&data->auth_qs, fd);
-        if (AuthFrameQueue_init(aq, queue_capacity) == -1) {
+        WriterFrameQueue* aq = SparseSet_WriterFrameQueue_value_at(&data->encrypt_qs, fd);
+        if (WriterFrameQueue_init(aq, queue_capacity) == -1) {
             *SparseSet_bool_activate(err_fds, fd) = true;
             continue;
         }
         AuthFrameQueue* dq = SparseSet_AuthFrameQueue_value_at(&data->decrypt_qs, fd);
         if (AuthFrameQueue_init(dq, queue_capacity) == -1) {
-            AuthFrameQueue_free(aq);
+            WriterFrameQueue_free(aq);
             *SparseSet_bool_activate(err_fds, fd) = true;
             continue;
         }
@@ -135,11 +137,11 @@ void AuthData_close(AuthData* data, const SparseSet_bool* close_fds) {
             continue;
         }
 
-        AuthFrameQueue* aq = SparseSet_AuthFrameQueue_value_at(&data->auth_qs, fd);
-        auth_queue_drain(aq);
-        AuthFrameQueue_free(aq);
-        if (SparseSet_AuthFrameQueue_contains(&data->auth_qs, fd)) {
-            SparseSet_AuthFrameQueue_erase(&data->auth_qs, fd);
+        WriterFrameQueue* aq = SparseSet_WriterFrameQueue_value_at(&data->encrypt_qs, fd);
+        writer_queue_drain(aq);
+        WriterFrameQueue_free(aq);
+        if (SparseSet_WriterFrameQueue_contains(&data->encrypt_qs, fd)) {
+            SparseSet_WriterFrameQueue_erase(&data->encrypt_qs, fd);
         }
 
         AuthFrameQueue* dq = SparseSet_AuthFrameQueue_value_at(&data->decrypt_qs, fd);
@@ -209,14 +211,13 @@ static int handshake_or_decrypt_frame(AuthData* data, AuthEntry* entry, const Re
         AuthFrame decrypted;
         if (plain == NULL) {
             decrypted = (AuthFrame){
-                { { NULL, 0 }, READER_FRAME_OK },
-                AUTH_FRAME_DECRYPT_FAILURE,
+                .status = FRAME_DECRYPT_ERROR,
             };
         }
         else {
             decrypted = (AuthFrame){
-                { { plain, plain_len }, READER_FRAME_OK },
-                AUTH_FRAME_OK,
+                 { plain, plain_len },
+                FRAME_OK,
             };
         }
         AuthFrameQueue* out = SparseSet_AuthFrameQueue_value_at(m_decrypted_out, fd);
@@ -259,7 +260,8 @@ void AuthData_handshake_or_decrypt(AuthData* data, const SparseSet_ReaderFrameQu
                     failed = true;
                     break;
                 }
-                const AuthFrame forwarded = { *frame, AUTH_FRAME_OK };
+                // TODO: make a function to convert error
+                const AuthFrame forwarded = {.status = FRAME_PAYLOAD_TOO_LARGE};
                 AuthFrameQueue* out = SparseSet_AuthFrameQueue_value_at(m_decrypted_out, fd);
                 const int err = AuthFrameQueue_push_back(out, &forwarded);
                 // overflow violates the capacity contract (see server_tick's
@@ -285,34 +287,29 @@ void AuthData_handshake_or_decrypt(AuthData* data, const SparseSet_ReaderFrameQu
                 SparseSet_AuthFrameQueue_erase(m_decrypted_out, fd);
             }
             if (SparseSet_WriterFrameQueue_contains(handshake_out, fd)) {
-                handshake_queue_drain(SparseSet_WriterFrameQueue_get(handshake_out, fd));
+                writer_queue_drain(SparseSet_WriterFrameQueue_get(handshake_out, fd));
                 SparseSet_WriterFrameQueue_erase(handshake_out, fd);
             }
         }
     }
 }
 
-void AuthData_encrypt(AuthData* data, const SparseSet_AuthFrameQueue* m_auth_qs, SparseSet_WriterFrameQueue* out, SparseSet_bool* err_fds) {
-    for (size_t i = 0; i < SparseSet_AuthFrameQueue_size(m_auth_qs); i++) {
-        const size_t fd = SparseSet_AuthFrameQueue_key_at_idx(m_auth_qs, i);
+void AuthData_encrypt(AuthData* data, const SparseSet_WriterFrameQueue* m_encrypt_qs, SparseSet_WriterFrameQueue* out, SparseSet_bool* err_fds) {
+    for (size_t i = 0; i < SparseSet_WriterFrameQueue_size(m_encrypt_qs); i++) {
+        const size_t fd = SparseSet_WriterFrameQueue_key_at_idx(m_encrypt_qs, i);
         if (SparseSet_bool_contains(err_fds, fd)) {
-            assert(false && "m_auth_qs fd must not be in err_fds");
+            assert(false && "m_encrypt_qs fd must not be in err_fds");
             continue;
         }
-        AuthFrameQueue* q = SparseSet_AuthFrameQueue_at_idx(m_auth_qs, i);
+        WriterFrameQueue* q = SparseSet_WriterFrameQueue_at_idx(m_encrypt_qs, i);
         AuthEntry* entry = SparseSet_AuthEntry_get(&data->entries, fd);
 
-        const size_t frame_count = AuthFrameQueue_size(q);
+        const size_t frame_count = WriterFrameQueue_size(q);
         for (size_t j = 0; j < frame_count; j++) {
-            const AuthFrame* frame = AuthFrameQueue_at(q, j);
-
-            if (frame->status != AUTH_FRAME_OK || frame->frame.status != READER_FRAME_OK) {
-                *SparseSet_bool_activate(err_fds, fd) = true;
-                break;
-            }
+            const WriterFrame* frame = WriterFrameQueue_at(q, j);
 
             uint32_t cipher_len;
-            unsigned char* cipher = tetrish_session_encrypt(&entry->key, frame->frame.content.ptr, (uint32_t)frame->frame.content.length, &cipher_len);
+            unsigned char* cipher = tetrish_session_encrypt(&entry->key, frame->ptr, (uint32_t)frame->length, &cipher_len);
             if (cipher == NULL) {
                 *SparseSet_bool_activate(err_fds, fd) = true;
                 break;
