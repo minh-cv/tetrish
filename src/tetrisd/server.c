@@ -1,5 +1,6 @@
 #include "server.h"
 #include "dtor.h"
+#include "htttp_layer.h"
 #include "logger.h"
 #include <sys/epoll.h>
 #include <unistd.h>
@@ -89,9 +90,10 @@ void server_tick(Server* server) {
     AuthData_handshake_or_decrypt(&server->auth, &server->player_io.read_qs, &server->auth.decrypt_qs,
                               &server->player_io.write_qs, &server->epoll.player_close_fds);
 
-    // TODO: echo: decrypted frames feed encrypt directly until the application layer
-    // sits between decrypt_qs and auth_qs
-    AuthData_encrypt(&server->auth, &server->auth.decrypt_qs, &server->player_io.write_qs,
+    Htttp_respond(&server->auth.decrypt_qs, &server->auth.auth_qs,
+                  &server->epoll.player_close_fds);
+
+    AuthData_encrypt(&server->auth, &server->auth.auth_qs, &server->player_io.write_qs,
                  &server->epoll.player_close_fds);
 
     PlayerIo_write(&server->player_io, &server->player_io.write_qs,
