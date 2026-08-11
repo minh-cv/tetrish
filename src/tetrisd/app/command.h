@@ -8,8 +8,9 @@
     @brief The methods the daemon routes.
 
     JOIN, LEAVE, START, MOVE, ROTATE and DROP are the methods the spec fixes.
-    SET_PLAYER_NAME and WHOAMI are additions of this implementation, needed
-    because the spec gives no way to carry a display name; they are documented
+    SET_PLAYER_NAME, WHOAMI and HOLD are additions of this implementation:
+    the spec gives no way to carry a display name, and libtetrisbrain
+    implements a hold piece that no fixed method reaches. They are documented
     alongside the rest in the README.
 */
 typedef enum {
@@ -21,6 +22,7 @@ typedef enum {
     APP_COMMAND_MOVE,       // MOVE /room/<id>/player/<pid>, body LEFT|RIGHT
     APP_COMMAND_ROTATE,     // ROTATE /room/<id>/player/<pid>, body CW|CCW
     APP_COMMAND_DROP,       // DROP /room/<id>/player/<pid>, body SOFT|HARD
+    APP_COMMAND_HOLD,       // HOLD /room/<id>/player/<pid>
 } AppCommandKind;
 
 /*!

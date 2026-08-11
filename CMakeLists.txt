@@ -34,7 +34,7 @@ target_compile_options(tetrisbrain PRIVATE -Wno-missing-braces)
 
 add_executable(tetrisctl src/tetrisctl/main.c)
 add_executable(tetrisd src/tetrisd/main.c src/tetrisd/server.c src/tetrisd/config_var.c src/tetrisd/sig.c src/tetrisd/socket.c src/tetrisd/acceptor.c src/tetrisd/epoll.c src/tetrisd/player_io.c src/tetrisd/auth.c src/tetrisd/htttp_layer.c src/tetrisd/app_layer.c src/tetrisd/logger_layer.c
-    src/tetrisd/app/command.c src/tetrisd/app/effect.c src/tetrisd/app/world.c)
+    src/tetrisd/app/command.c src/tetrisd/app/effect.c src/tetrisd/app/event.c src/tetrisd/app/world.c)
 target_include_directories(tetrisd PRIVATE src/tetrisd)
 target_link_libraries(tetrisd PRIVATE daemon logger network common tetrissh config htttp tetrisbrain)
 target_compile_definitions(tetrisd PRIVATE

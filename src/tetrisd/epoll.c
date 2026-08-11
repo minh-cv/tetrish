@@ -131,6 +131,11 @@ int Epoll_poll(EpollData* data, Vec_Fd* player_read, Vec_Fd* player_write, Epoll
                 m_signals->logger_timer_expired = true;
             }
             break;
+        case EPOLL_ENTRY_ROOM_TIMERFD:
+            if (ev->events & EPOLLIN) {
+                m_signals->room_timer_expired = true;
+            }
+            break;
         case EPOLL_ENTRY_PLAYER:
             if (ev->events & (EPOLLERR | EPOLLHUP)) {
                 *SparseSet_bool_activate(&data->player_close_fds, (size_t)fd) = true;

@@ -2,7 +2,10 @@
 #include "dtor.h"
 #include "htttp_layer.h"
 #include "logger.h"
+#include <stdlib.h>
 #include <sys/epoll.h>
+#include <sys/timerfd.h>
+#include <time.h>
 #include <unistd.h>
 
 static DTOR_WRAPPER_DEFINE(config_var_free)
@@ -89,6 +92,58 @@ static void logger_tick(Server* server, const EpollSignals* signals) {
     }
 }
 
+/*
+    A single timerfd paces every room. It is armed at the configured tick rate
+    and never disarmed: an idle server wakes tick_hz times a second and finds no
+    running room, which costs less than the bookkeeping to arm and disarm it as
+    rooms come and go.
+*/
+static int room_timer_init(Server* server) {
+    const int timerfd = timerfd_create(CLOCK_MONOTONIC, TFD_NONBLOCK | TFD_CLOEXEC);
+    if (timerfd == -1) {
+        LOGGER_PERROR("server", "timerfd_create");
+        return -1;
+    }
+
+    const long interval_ns = 1000L * 1000L * 1000L / (long)server->cfg.tick_hz;
+    struct itimerspec spec;
+    memset(&spec, 0, sizeof(spec));
+    spec.it_value.tv_nsec = interval_ns;
+    spec.it_interval.tv_nsec = interval_ns;
+    if (timerfd_settime(timerfd, 0, &spec, NULL) == -1) {
+        LOGGER_PERROR("server", "timerfd_settime");
+        close(timerfd);
+        return -1;
+    }
+
+    if ((size_t)timerfd >= server->cfg.max_fds ||
+        Epoll_accept_one(&server->epoll, timerfd, EPOLL_ENTRY_ROOM_TIMERFD, EPOLLIN) == -1) {
+        LOGGER_LOG(LOG_ERROR, "server", "cannot watch room timerfd=%d", timerfd);
+        close(timerfd);
+        return -1;
+    }
+
+    server->room_timerfd = timerfd;
+    return 0;
+}
+
+/*
+    Reads the expiry count and clamps it. A descheduled daemon must not try to
+    catch up a hundred frames inside one tick: that would freeze every other
+    connection for as long as the catch-up takes, and the game would be
+    unplayable anyway.
+*/
+static uint64_t room_timer_read(Server* server) {
+    static const uint64_t MAX_FRAMES_PER_TICK = 4;
+
+    uint64_t expirations = 0;
+    const ssize_t n = read(server->room_timerfd, &expirations, sizeof(expirations));
+    if (n != (ssize_t)sizeof(expirations)) {
+        return 0;
+    }
+    return expirations > MAX_FRAMES_PER_TICK ? MAX_FRAMES_PER_TICK : expirations;
+}
+
 int server_init(Server* server) {
     DTOR_DEFINE(errdtor, 10);
     DTOR_DEFINE(dtor, 1);
@@ -143,7 +198,7 @@ int server_init(Server* server) {
 
     // one effect per parsed message per fd is the worst case a tick can
     // produce before rooms add fan-out
-    if (AppData_init(&server->app, server->cfg.max_fds,
+    if (AppData_init(&server->app, server->cfg.max_fds, server->cfg.max_rooms,
                      (size_t)server->cfg.max_fds * server->cfg.client_capacity,
                      server->cfg.app_arena_capacity) == -1) {
         DTOR_ERR_RETURN(errdtor, dtor, -1);
@@ -153,6 +208,16 @@ int server_init(Server* server) {
     if (Epoll_accept_one(&server->epoll, server->acceptor.listen_fd, EPOLL_ENTRY_ACCEPTOR, EPOLLIN) == -1) {
         DTOR_ERR_RETURN(errdtor, dtor, -1);
     }
+
+    server->room_timerfd = -1;
+    server->broadcast_counter = 0;
+    if (room_timer_init(server) == -1) {
+        DTOR_ERR_RETURN(errdtor, dtor, -1);
+    }
+
+    // the piece bags are shuffled with rand(); without this every room in
+    // every run of the daemon would see the same sequence
+    srand((unsigned)time(NULL) ^ (unsigned)getpid());
 
     LOGGER_LOG(LOG_INFO, "server", "tetrisd pid=%d listening on %s:%d",
                (int)getpid(), server->cfg.address, server->cfg.port);
@@ -167,6 +232,11 @@ int server_init(Server* server) {
 
 void server_free(Server* server) {
     LOGGER_LOG(LOG_INFO, "server", "tetrisd stopping");
+    if (server->room_timerfd != -1) {
+        Epoll_erase_one(&server->epoll, server->room_timerfd);
+        close(server->room_timerfd);
+        server->room_timerfd = -1;
+    }
     AppData_free(&server->app);
     HtttpData_free(&server->htttp);
     AuthData_free(&server->auth);
@@ -212,6 +282,18 @@ void server_tick(Server* server) {
                     &server->epoll.player_close_fds);
 
     AppData_respond(&server->app, &server->htttp.parsed_qs, &server->epoll.player_close_fds);
+
+    if (signals.room_timer_expired) {
+        const uint64_t frames = room_timer_read(server);
+        // a snapshot every frame would spend most of the daemon's time
+        // encrypting boards nobody sees redraw; the divisor is the knob
+        server->broadcast_counter += frames;
+        const bool broadcast = server->broadcast_counter >= server->cfg.state_broadcast_divisor;
+        if (broadcast) {
+            server->broadcast_counter = 0;
+        }
+        AppData_tick(&server->app, frames, broadcast);
+    }
 
     AppData_flush(&server->app, &server->htttp.response_qs, &server->epoll.player_close_fds);
 

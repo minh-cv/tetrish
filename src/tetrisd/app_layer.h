@@ -47,13 +47,15 @@ typedef struct {
 
     @pre @p data is not initialized
 
-    @post @c entries and the world have capacity @p max_entries , and @c sink
+    @post @c entries and the world's player table have capacity @p max_entries ,
+          the world holds up to @p max_rooms rooms, and @c sink
           can hold @p effect_capacity effects with @p arena_capacity bytes of
           body between them.
 
     @return -1 if failed, 0 otherwise
 */
-int AppData_init(AppData* data, size_t max_entries, size_t effect_capacity, size_t arena_capacity);
+int AppData_init(AppData* data, size_t max_entries, size_t max_rooms,
+                 size_t effect_capacity, size_t arena_capacity);
 
 /*!
     @brief release all memory in @p data
@@ -125,6 +127,18 @@ void AppData_respond(
     const SparseSet_HtttpParsedMessageQueue* m_parsed_qs,
     SparseSet_bool* err_fds
 );
+
+/*!
+    @brief Advance every running room by @p frames frames, collecting what that
+           produces into @c sink .
+
+    Runs after @c AppData_respond so an input that arrived this tick affects
+    this tick's frame rather than the next one.
+
+    @param broadcast whether a full STATE snapshot goes out this tick; the
+           caller runs it on a divisor of the frame rate
+*/
+void AppData_tick(AppData* data, uint64_t frames, bool broadcast);
 
 /*!
     @brief Turn every effect in @c sink into an outbound message in its

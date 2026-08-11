@@ -19,6 +19,14 @@ typedef struct {
     AuthData auth;
     HtttpData htttp;
     AppData app;
+
+    /*
+        One process-wide timer at the game frame rate, not one per room: room
+        count is bounded by max_rooms but fd count is bounded by max_fds, and
+        per-room timers would burn the latter to express the former.
+    */
+    int room_timerfd;
+    uint64_t broadcast_counter;
 } Server;
 
 int server_init(Server* server);

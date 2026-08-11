@@ -15,6 +15,8 @@ struct config_var {
     unsigned int logger_capacity;
     unsigned int client_capacity;
     unsigned int app_arena_capacity;
+    unsigned int tick_hz;
+    unsigned int state_broadcast_divisor;
 };
 int config_var_init(struct config_var* cfg_var);
 void config_var_free(struct config_var* cfg);

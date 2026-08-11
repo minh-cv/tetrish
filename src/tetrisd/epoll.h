@@ -44,6 +44,7 @@ typedef struct {
     // EPOLLERR/EPOLLHUP on the logger socket, reported whatever the interest mask
     bool logger_hangup;
     bool logger_timer_expired;
+    bool room_timer_expired;
 } EpollSignals;
 
 // takes ownership of epoll_fd; player fds are closed by Epoll_close/Epoll_free,

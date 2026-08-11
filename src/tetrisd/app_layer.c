@@ -20,11 +20,12 @@ static void response_queue_drain(HtttpOutboundMessageQueue* q) {
     }
 }
 
-int AppData_init(AppData* data, size_t max_entries, size_t effect_capacity, size_t arena_capacity) {
+int AppData_init(AppData* data, size_t max_entries, size_t max_rooms,
+                 size_t effect_capacity, size_t arena_capacity) {
     if (SparseSet_AppEntry_init(&data->entries, max_entries) == -1) {
         return -1;
     }
-    if (world_init(&data->world, max_entries) == -1) {
+    if (world_init(&data->world, max_entries, max_rooms) == -1) {
         SparseSet_AppEntry_free(&data->entries);
         return -1;
     }
@@ -155,6 +156,14 @@ void AppData_respond(AppData* data, const SparseSet_HtttpParsedMessageQueue* m_p
                 break;
             }
         }
+    }
+}
+
+void AppData_tick(AppData* data, uint64_t frames, bool broadcast) {
+    if (world_tick(&data->world, frames, broadcast, &data->sink) == -1) {
+        // a dropped snapshot costs one frame of display, and the next one
+        // carries everything it would have
+        LOGGER_LOG(LOG_WARN, "app", "dropped a state broadcast: no room to record it");
     }
 }
 

@@ -56,6 +56,10 @@ int config_var_init(struct config_var* cfg_var) {
     // sized for a full board snapshot per seat per tick, with slack
     static const unsigned int APP_ARENA_CAPACITY_DEFAULT = 1u << 20;
     static const unsigned int APP_ARENA_CAPACITY_MIN = 4096;
+    // libtetrisbrain's gravity and lock counters are expressed in frames and
+    // tuned around 60 Hz, so this is the rate they were written for
+    static const unsigned int TICK_HZ_DEFAULT = 60;
+    static const unsigned int STATE_BROADCAST_DIVISOR_DEFAULT = 2;
     // the nonce response queues two frames back to back, so anything smaller stalls the handshake.
     static const unsigned int CLIENT_CAPACITY_MIN = 2;
 
@@ -149,6 +153,17 @@ int config_var_init(struct config_var* cfg_var) {
         DTOR_ERR_RETURN(errdtor, dtor, -1);
     }
 
+    unsigned int tick_hz;
+    if (config_get_uint_arg(&config, "tick_hz", TICK_HZ_DEFAULT, 1, &tick_hz) == -1) {
+        DTOR_ERR_RETURN(errdtor, dtor, -1);
+    }
+
+    unsigned int state_broadcast_divisor;
+    if (config_get_uint_arg(&config, "state_broadcast_divisor", STATE_BROADCAST_DIVISOR_DEFAULT,
+                            1, &state_broadcast_divisor) == -1) {
+        DTOR_ERR_RETURN(errdtor, dtor, -1);
+    }
+
     char* log_ipc = config_get_path(&config, "log_ipc", project_dir);
     if (log_ipc == NULL) {
         fputs("log_ipc invalid\n", stderr);
@@ -169,6 +184,8 @@ int config_var_init(struct config_var* cfg_var) {
         .logger_capacity = logger_capacity,
         .client_capacity = client_capacity,
         .app_arena_capacity = app_arena_capacity,
+        .tick_hz = tick_hz,
+        .state_broadcast_divisor = state_broadcast_divisor,
     };
 
     *cfg_var = new_cfg;
