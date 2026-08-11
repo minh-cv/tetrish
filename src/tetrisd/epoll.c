@@ -91,7 +91,13 @@ void Epoll_close(EpollData* data, const SparseSet_bool* m_close_fds) {
     }
 }
 
-int Epoll_poll(EpollData* data, Vec_Fd* player_read, Vec_Fd* player_write, bool* acceptor_readable) {
+void Epoll_erase_one(EpollData* data, Fd fd) {
+    assert(fd >= 0 && (size_t)fd < data->entries.capacity);
+    assert(SparseSet_EpollEntry_contains(&data->entries, (size_t)fd));
+    SparseSet_EpollEntry_erase(&data->entries, (size_t)fd);
+}
+
+int Epoll_poll(EpollData* data, Vec_Fd* player_read, Vec_Fd* player_write, EpollSignals* m_signals) {
     const int n = epoll_wait(data->epoll_fd, data->events.ptr, (int)data->events.length, -1);
     if (n == -1) {
         if (errno != EINTR) {
@@ -108,7 +114,21 @@ int Epoll_poll(EpollData* data, Vec_Fd* player_read, Vec_Fd* player_write, bool*
         switch (entry->type) {
         case EPOLL_ENTRY_ACCEPTOR:
             if (ev->events & EPOLLIN) {
-                *acceptor_readable = true;
+                m_signals->acceptor_readable = true;
+            }
+            break;
+        case EPOLL_ENTRY_LOGGER:
+            if (ev->events & (EPOLLERR | EPOLLHUP)) {
+                m_signals->logger_hangup = true;
+                break;
+            }
+            if (ev->events & EPOLLOUT) {
+                m_signals->logger_writable = true;
+            }
+            break;
+        case EPOLL_ENTRY_LOGGER_TIMERFD:
+            if (ev->events & EPOLLIN) {
+                m_signals->logger_timer_expired = true;
             }
             break;
         case EPOLL_ENTRY_PLAYER:
@@ -151,6 +171,12 @@ static void sync_interest_one(EpollData* data, size_t fd, EpollEntry* entry, Epo
         return;
     }
     entry->current_interest = want;
+}
+
+void Epoll_set_interest(EpollData* data, Fd fd, EpollInterest interest) {
+    EpollEntry* entry = SparseSet_EpollEntry_get(&data->entries, (size_t)fd);
+    assert(entry->type != EPOLL_ENTRY_PLAYER && "players go through Epoll_sync_interest");
+    sync_interest_one(data, (size_t)fd, entry, interest);
 }
 
 void Epoll_sync_interest(EpollData* data, const Vec_WriterQueueStatusEntry* write_qs_status, const SparseSet_bool* m_close_fds, Fd acceptor_fd, bool should_stop_accepting) {

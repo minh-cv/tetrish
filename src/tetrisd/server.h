@@ -6,11 +6,13 @@
 #include "config_var.h"
 #include "epoll.h"
 #include "htttp_layer.h"
+#include "logger_layer.h"
 #include "player_io.h"
 #include "app_layer.h"
 
 typedef struct {
     struct config_var cfg;
+    LoggerData logger;
     Acceptor acceptor;
     EpollData epoll;
     PlayerIo player_io;
