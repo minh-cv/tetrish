@@ -1,7 +1,3 @@
-// This code was written by ChatGPT4
-// Modify it for your own usage to implement features for PA1 (or completely
-// rewrite it) Include the shell header file for necessary constants and
-// function declarations
 #include "libs/shell.h"
 #include <assert.h>
 #include <stddef.h>
@@ -38,9 +34,11 @@ static int shell_help(char **args) {
 }
 
 static int shell_exit(char **cmd) {
-    for (int i = 0; cmd[i] != NULL && i < MAX_ARGS; i++) {
-        free(cmd[i]);
+    size_t argc = 0;
+    while (argc < CMDLINE_MAX_ARGS && cmd[argc] != NULL) {
+        argc++;
     }
+    cmdline_free(cmd, argc);
     exit(0);
 }
 
@@ -151,7 +149,7 @@ static int (*builtin_command_func[])(char **) = {
     &unset_env_var // builtin_command_func[6]: unsetenv
 };
 
-size_t get_builtin_command_index(char *cmd) {
+size_t get_builtin_command_index(const char *cmd) {
     for (size_t i = 0; i < sizeof(builtin_commands)/sizeof(const char*); i++) {
         if (strcmp(cmd, builtin_commands[i]) == 0) {
             return i;
@@ -164,71 +162,61 @@ void execute_builtin_command(char **cmd, size_t index) {
     builtin_command_func[index](cmd);
 }
 
-// Function to read a command from the user input
-bool read_command_from_file(char **cmd, FILE* file) {
-  // Define a character array to store the command line input
-  char line[MAX_LINE];
-  // Initialize count to keep track of the number of characters read
-  int count = 0, i = 0;
-  // Array to hold pointers to the parsed command arguments
-  char *array[MAX_ARGS], *command_token;
-
-  // Infinite loop to read characters until a newline or maximum line length is
-  // reached
-  for (;;) {
-    // Read a single character from standard input
-    int current_char = fgetc(file);
-    // Store the character in the line array and increment count
-    line[count++] = (char)(current_char == EOF ? '\n' : current_char);
-    // If a newline character is encountered, break out of the loop
-    if (current_char == '\n' || current_char == EOF)
-      break;
-    // If the command exceeds the maximum length, print an error and exit
-    if (count >= MAX_LINE) {
-      printf("Command is too long, unable to process\n");
-      exit(1);
+/*
+    Reads one line however long it is. The original read into a fixed buffer
+    and called exit(1) when the line outgrew it, which turned a long paste into
+    a dead shell.
+*/
+static ssize_t read_line(char** line, size_t* capacity, FILE* file) {
+    const ssize_t length = getline(line, capacity, file);
+    if (length <= 0) {
+        return length;
     }
-  }
-  // Null-terminate the command line string
-  line[count] = '\0';
-
-  // If only the newline character was entered, return without processing
-  if (count == 1)
-    return feof(file) == 0;
-
-  // Use strtok to parse the first token (word) of the command
-  command_token = strtok(line, " \n");
-
-  // Continue parsing the line into words and store them in the array
-  while (command_token != NULL) {
-    array[i++] = strdup(command_token);  // Duplicate the token and store it
-    command_token = strtok(NULL, " \n"); // Get the next token
-  }
-
-  // Copy the parsed command and its parameters to the cmd array
-  for (int j = 0; j < i; j++) {
-    cmd[j] = array[j];
-  }
-  // Null-terminate the cmd array to mark the end of arguments
-  cmd[i] = NULL;
-  return feof(file) == 0;
+    if ((*line)[length - 1] == '\n') {
+        (*line)[length - 1] = '\0';
+        return length - 1;
+    }
+    return length;
 }
 
-bool read_command(char **cmd) {
-    return read_command_from_file(cmd, stdin);
+ShellReadResult read_command_from_file(char* argv[SHELL_ARGV_SIZE], size_t* out_argc, FILE* file) {
+    *out_argc = 0;
+    argv[0] = NULL;
+
+    char* line = NULL;
+    size_t capacity = 0;
+    const ssize_t length = read_line(&line, &capacity, file);
+    if (length < 0) {
+        free(line);
+        return SHELL_READ_EOF;
+    }
+
+    const CmdlineStatus status = cmdline_split(line, argv, out_argc);
+    free(line);
+
+    if (status != CMDLINE_OK) {
+        fprintf(stderr, "tetrish: %s\n", cmdline_status_string(status));
+        return SHELL_READ_EMPTY;
+    }
+    if (*out_argc == 0) {
+        return SHELL_READ_EMPTY;
+    }
+
+    argv[*out_argc] = NULL;
+    return SHELL_READ_OK;
 }
 
 // Function to display the shell prompt
-void type_prompt() {
-  fflush(stdout); // Flush the output buffer
-  printf("$$ ");  // Print the shell prompt
+void type_prompt(void) {
+    fputs("$$ ", stdout);
+    fflush(stdout);
 }
 
-void clear() {
-#ifdef _WIN32
-    system("cls"); // Windows command to clear screen
-#else
-    system("clear"); // UNIX/Linux command to clear screen
-#endif
-
+/*
+    Written directly rather than shelling out to clear(1): the shell should not
+    need another process, or a PATH, to draw its own first screen.
+*/
+void clear(void) {
+    fputs("\033[2J\033[H", stdout);
+    fflush(stdout);
 }

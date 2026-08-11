@@ -65,6 +65,7 @@ target_include_directories(perms PUBLIC src/tetrish)
 
 add_executable(tetrish src/tetrish/main.c src/tetrish/shell.c)
 target_include_directories(tetrish PRIVATE src/tetrish)
+target_link_libraries(tetrish PRIVATE cmdline)
 
 add_executable(ld src/tetrish/system_programs/ld.c)
 target_include_directories(ld PRIVATE src/tetrish)

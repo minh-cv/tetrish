@@ -1,88 +1,94 @@
 #include "libs/shell.h"
-#include <assert.h>
-#include <limits.h>
 #include <stdbool.h>
 #include <stdint.h>
+#include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+#include <sys/wait.h>
 #include <unistd.h>
-#include <stdio.h>
 
-static void free_cmd(char** cmd) {
-    for (int i = 0; cmd[i] != NULL && i < MAX_ARGS; i++) {
-        free(cmd[i]);
+static void run_external(char** argv) {
+    const pid_t pid = fork();
+    if (pid < 0) {
+        perror("fork");
+        return;
+    }
+    if (pid == 0) {
+        execvp(argv[0], argv);
+        fprintf(stderr, "%s: command not found\n", argv[0]);
+        _exit(127);
+    }
+
+    int child_status;
+    if (waitpid(pid, &child_status, WUNTRACED) == -1) {
+        perror("waitpid");
+        return;
+    }
+    if (!WIFEXITED(child_status)) {
+        printf("tetrish: child terminated abnormally\n");
+        return;
+    }
+    const int exit_status = WEXITSTATUS(child_status);
+    if (exit_status != 0) {
+        printf("tetrish: child exited with status %d\n", exit_status);
     }
 }
 
-void body(FILE* input) {
-    // Define an array to hold the command and its arguments
-    int child_status;
-    pid_t pid;
-    
-    while (true) {
-        char *cmd[MAX_ARGS] = {0};
-        if (input == stdin) type_prompt();     // Display the prompt
-        bool read_command_result = read_command_from_file(cmd, input); // Read a command from the user
-        if (cmd[0] == NULL) {
-            free_cmd(cmd);
-            if (!read_command_result) {
-                break;
-            }
+/*
+    One REPL for both the startup script and the terminal, so a line behaves
+    the same however it arrives.
+*/
+static void body(FILE* input) {
+    for (;;) {
+        if (input == stdin) {
+            type_prompt();
+        }
+
+        char* argv[SHELL_ARGV_SIZE] = {0};
+        size_t argc = 0;
+        const ShellReadResult result = read_command_from_file(argv, &argc, input);
+
+        if (result == SHELL_READ_EOF) {
+            return;
+        }
+        if (result == SHELL_READ_EMPTY) {
             continue;
         }
 
-        if (input != stdin) {
-            if (strncmp(cmd[0], "PATH=", 5) == 0) {
-                set_env_var((char*[]){NULL, cmd[0]});
-                free_cmd(cmd);
-                continue;
-            }
+        /*
+            The .tetrishrc format lets a bare `KEY=value` line set a variable,
+            which the interactive prompt deliberately does not: at the prompt
+            that spelling is far more likely to be a mistyped command.
+        */
+        if (input != stdin && strchr(argv[0], '=') != NULL &&
+            get_builtin_command_index(argv[0]) == SIZE_MAX) {
+            char* pair[] = {NULL, argv[0], NULL};
+            set_env_var(pair);
+            cmdline_free(argv, argc);
+            continue;
         }
 
-        size_t builtin_idx = get_builtin_command_index(cmd[0]);
+        const size_t builtin_idx = get_builtin_command_index(argv[0]);
         if (builtin_idx != SIZE_MAX) {
-            execute_builtin_command(cmd, builtin_idx);
-            free_cmd(cmd);
-            continue;
-        }
-
-        pid = fork();
-        if (pid == 0) {
-            execvp(cmd[0], cmd);
-            // If execv returns, command execution has failed
-            // perror(cmd[0]);
-            fprintf(stderr, "%s: command not found\n", cmd[0]);
-            _exit(1);
-        }
-        else if (pid < 0) {
-            fprintf(stderr, "Cannot spawn task\n");
+            execute_builtin_command(argv, builtin_idx);
         }
         else {
-            waitpid(pid, &child_status, WUNTRACED);
-            if (WIFEXITED(child_status)) {
-                int exit_status = WEXITSTATUS(child_status);
-                if (exit_status != 0) {
-                    printf("tetrish: Child process exit with status %d\n", exit_status);
-                }
-            }
-            else {
-                printf("tetrish: Child status terminated abnormally\n");
-            }
+            run_external(argv);
         }
-        free_cmd(cmd);
-        if (!read_command_result) {
-            break;
-        }
+
+        cmdline_free(argv, argc);
     }
 }
 
-// The main function where the shell's execution begins
 int main(void) {
     clear();
-    FILE* shellrc = fopen(".tetrishrc", "r");
+
+    FILE* const shellrc = fopen(".tetrishrc", "r");
     if (shellrc != NULL) {
         body(shellrc);
         fclose(shellrc);
     }
+
     body(stdin);
+    return 0;
 }
