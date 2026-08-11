@@ -258,6 +258,10 @@ void AuthData_handshake_or_decrypt(AuthData* data, const SparseSet_ReaderFrameQu
             const ReaderFrame* frame = ReaderFrameQueue_at(q, j);
 
             if (frame->status != READER_FRAME_OK) {
+if (entry->auth_state != AUTH_DONE) {
+                    failed = true;
+                    break;
+                }
                 const AuthFrame forwarded = { *frame, AUTH_FRAME_OK };
                 AuthFrameQueue* out = SparseSet_AuthFrameQueue_value_at(m_decrypted_out, fd);
                 const int err = AuthFrameQueue_push_back(out, &forwarded);
