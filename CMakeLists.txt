@@ -29,9 +29,6 @@ add_library(tetrisbrain
 target_include_directories(tetrisbrain PRIVATE include)
 target_compile_options(tetrisbrain PRIVATE -Wno-missing-braces)
 
-add_library(cmdline src/cmdline/cmdline.c)
-target_include_directories(cmdline PUBLIC include external/corestack/include)
-
 add_executable(tetrisctl src/tetrisctl/main.c)
 add_executable(tetrisd src/tetrisd/main.c src/tetrisd/server.c src/tetrisd/config_var.c src/tetrisd/sig.c src/tetrisd/socket.c src/tetrisd/acceptor.c src/tetrisd/epoll.c src/tetrisd/player_io.c src/tetrisd/auth.c src/tetrisd/htttp_layer.c)
 target_include_directories(tetrisd PRIVATE src/tetrisd)
