@@ -50,10 +50,12 @@ target_compile_definitions(tetrislogd PRIVATE
     $<$<BOOL:${TETRISH_TETRISLOGD_NO_DAEMON}>:TETRISH_TETRISLOGD_NO_DAEMON>
 )
 
-add_executable(tetrisu src/tetrisu/main.c
-    src/tetrisu/config_var.c)
+add_executable(tetrisu src/tetrisu/main.c src/tetrisu/client.c src/tetrisu/config_var.c
+    src/tetrisu/connector.c src/tetrisu/poller.c src/tetrisu/server_io.c src/tetrisu/auth.c
+    src/tetrisu/htttp_layer.c src/tetrisu/input_layer.c src/tetrisu/app_layer.c
+    src/tetrisu/ui_layer.c)
 target_include_directories(tetrisu PRIVATE src/tetrisu)
-target_link_libraries(tetrisu PRIVATE cjson htttp common tetrissh config)
+target_link_libraries(tetrisu PRIVATE network htttp common tetrissh config cmdline tui tuiui tetrisbrain)
 target_include_directories(tetrisu PRIVATE include)
 
 add_library(perms src/tetrish/libs/perms.c)
