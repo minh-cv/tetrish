@@ -256,6 +256,46 @@ static int cmd_whoami(AppData* data, size_t argc, char* const argv[],
     return send_request(data, m_request_q, "WHOAMI", "/player", NULL, 0, PENDING_WHOAMI, NULL);
 }
 
+/*
+    A room of one. The client picks the code so two players on the same daemon
+    cannot collide by accident; the request is the same JOIN a multiplayer
+    room would use, which is what keeps singleplayer from being a second code
+    path through the server.
+*/
+static void make_room_code(char* out, size_t out_size) {
+    static const char ALPHABET[] = "ABCDEFGHJKLMNPQRSTUVWXYZ23456789";
+    size_t i = 0;
+    for (; i + 1 < out_size && i < 6; i++) {
+        out[i] = ALPHABET[(size_t)rand() % (sizeof(ALPHABET) - 1)];
+    }
+    out[i] = '\0';
+}
+
+static int join_room(AppData* data, HtttpOutboundMessageQueue* m_request_q, const char* code) {
+    char path[CLIENT_ROOM_MAX + 8];
+    if (snprintf(path, sizeof(path), "/room/%s", code) < 0) {
+        return -1;
+    }
+    snprintf(data->view.room, sizeof(data->view.room), "%s", code);
+    return send_request(data, m_request_q, "JOIN", path, NULL, 0, PENDING_JOIN, NULL);
+}
+
+static int cmd_singleplayer(AppData* data, size_t argc, char* const argv[],
+                            HtttpOutboundMessageQueue* m_request_q) {
+    if (data->view.mode != MODE_SHELL) {
+        return 0;
+    }
+
+    char code[CLIENT_ROOM_MAX];
+    if (argc >= 2) {
+        snprintf(code, sizeof(code), "%s", argv[1]);
+    }
+    else {
+        make_room_code(code, sizeof(code));
+    }
+    return join_room(data, m_request_q, code);
+}
+
 static int cmd_quit(AppData* data, size_t argc, char* const argv[],
                     HtttpOutboundMessageQueue* m_request_q) {
     (void)argc;
@@ -272,6 +312,7 @@ static const CommandEntry COMMAND_TABLE[] = {
     {"htttp", 2, 4, "htttp <METHOD> [PATH] [BODY]", cmd_htttp},
     {"set-name", 2, 2, "set-name <name>", cmd_set_name},
     {"whoami", 1, 1, "whoami", cmd_whoami},
+    {"singleplayer", 1, 2, "singleplayer [room]", cmd_singleplayer},
     {"help", 1, 1, "help", cmd_help},
     {"quit", 1, 1, "quit", cmd_quit},
 };
@@ -353,7 +394,8 @@ static void adopt_player_id(AppData* data, const HtttpMessage* message) {
     data->view.dirty = true;
 }
 
-static void handle_response(AppData* data, const HtttpMessage* message) {
+static void handle_response(AppData* data, const HtttpMessage* message,
+                            HtttpOutboundMessageQueue* m_request_q) {
     adopt_player_id(data, message);
 
     const HtttpResponse* const response = &message->response;
@@ -368,6 +410,38 @@ static void handle_response(AppData* data, const HtttpMessage* message) {
     PendingRequestQueue_pop_front(&data->pending);
 
     switch (request.kind) {
+    case PENDING_JOIN:
+        if (ok) {
+            char path[CLIENT_ROOM_MAX + 8];
+            snprintf(path, sizeof(path), "/room/%s", data->view.room);
+            if (send_request(data, m_request_q, "START", path, NULL, 0, PENDING_START, NULL) == -1) {
+                note(&data->view, "cannot ask the server to start the room");
+            }
+            return;
+        }
+        data->view.room[0] = '\0';
+        break;
+    case PENDING_START:
+        if (ok) {
+            // the switch itself happens at tick end, once the UI has drawn the
+            // last shell frame and the input discipline can change with it
+            data->requested_mode = MODE_GAME;
+            data->view.game_valid = false;
+            return;
+        }
+        data->view.room[0] = '\0';
+        break;
+    case PENDING_LEAVE:
+        data->view.room[0] = '\0';
+        data->requested_mode = MODE_SHELL;
+        break;
+    case PENDING_INPUT:
+        // an input the server refused is worth saying once; an accepted one is
+        // 60 lines a second of nothing
+        if (!ok) {
+            note(&data->view, "input refused: %d %s", response->status, response->reason);
+        }
+        return;
     case PENDING_SET_NAME:
         if (ok) {
             snprintf(data->view.player_name, sizeof(data->view.player_name), "%s", request.name);
@@ -392,13 +466,35 @@ static void handle_response(AppData* data, const HtttpMessage* message) {
     }
 }
 
+/*
+    STATE is the only message the server originates, so the push table is one
+    branch for now; it is written as a lookup so a second push kind is a row
+    rather than a rewrite.
+*/
 static void handle_push(AppData* data, const HtttpMessage* message) {
     adopt_player_id(data, message);
-    note(&data->view, "push %s %s: %.*s", message->request.method, message->request.path,
-         (int)message->request.body_len, (const char*)message->request.body);
+
+    if (strcmp(message->request.method, "STATE") != 0) {
+        note(&data->view, "unhandled push %s %s", message->request.method, message->request.path);
+        return;
+    }
+
+    if (game_view_decode(&data->view.game, (const char*)message->request.body,
+                         message->request.body_len) == -1) {
+        note(&data->view, "unreadable state push");
+        return;
+    }
+    data->view.game_valid = true;
+    data->view.game_seq++;
+    data->view.dirty = true;
+
+    if (data->view.mode == MODE_SHELL && data->view.game.status == GAME_STATUS_RUNNING) {
+        return;
+    }
 }
 
-static void route_inbound(AppData* data, const HtttpParsedMessageQueue* m_parsed_q, ClientFault* fault) {
+static void route_inbound(AppData* data, const HtttpParsedMessageQueue* m_parsed_q,
+                          HtttpOutboundMessageQueue* m_request_q, ClientFault* fault) {
     const size_t count = HtttpParsedMessageQueue_size(m_parsed_q);
     for (size_t i = 0; i < count; i++) {
         const HtttpParsedMessage* const parsed = HtttpParsedMessageQueue_at(m_parsed_q, i);
@@ -409,7 +505,7 @@ static void route_inbound(AppData* data, const HtttpParsedMessageQueue* m_parsed
                 handle_push(data, &parsed->message);
             }
             else {
-                handle_response(data, &parsed->message);
+                handle_response(data, &parsed->message, m_request_q);
             }
             break;
         case FRAME_DECRYPT_ERROR:
@@ -428,6 +524,100 @@ static void route_inbound(AppData* data, const HtttpParsedMessageQueue* m_parsed
     }
 }
 
+/*
+    Key bindings. Arrows and the WASD-ish cluster both work, because a terminal
+    that swallows arrow keys is common enough that a demo should not depend on
+    them.
+*/
+static bool bind_key(const InputEvent* event, PlayerInputKey* out) {
+    switch (event->key.key) {
+    case TUI_KEY_LEFT: *out = PLAYER_INPUT_KEY_MOVE_LEFT; return true;
+    case TUI_KEY_RIGHT: *out = PLAYER_INPUT_KEY_MOVE_RIGHT; return true;
+    case TUI_KEY_DOWN: *out = PLAYER_INPUT_KEY_SOFT_DROP; return true;
+    case TUI_KEY_UP: *out = PLAYER_INPUT_KEY_ROTATE_RIGHT; return true;
+    case TUI_KEY_SPACE: *out = PLAYER_INPUT_KEY_LOCK_DOWN; return true;
+    default: break;
+    }
+
+    switch (event->key.ch) {
+    case 'a': case 'A': *out = PLAYER_INPUT_KEY_MOVE_LEFT; return true;
+    case 'd': case 'D': *out = PLAYER_INPUT_KEY_MOVE_RIGHT; return true;
+    case 's': case 'S': *out = PLAYER_INPUT_KEY_SOFT_DROP; return true;
+    case 'w': case 'W': *out = PLAYER_INPUT_KEY_LOCK_DOWN; return true;
+    case 'x': case 'X': *out = PLAYER_INPUT_KEY_ROTATE_RIGHT; return true;
+    case 'z': case 'Z': *out = PLAYER_INPUT_KEY_ROTATE_LEFT; return true;
+    case 'c': case 'C': *out = PLAYER_INPUT_KEY_HOLD; return true;
+    default: return false;
+    }
+}
+
+static int leave_room(AppData* data, HtttpOutboundMessageQueue* m_request_q) {
+    char path[CLIENT_ROOM_MAX + 8];
+    if (snprintf(path, sizeof(path), "/room/%s", data->view.room) < 0) {
+        return -1;
+    }
+    return send_request(data, m_request_q, "LEAVE", path, NULL, 0, PENDING_LEAVE, NULL);
+}
+
+static void handle_game_key(AppData* data, const InputEvent* event,
+                            HtttpOutboundMessageQueue* m_request_q, ClientFault* fault) {
+    if (event->key.ch == 'q' || event->key.ch == 'Q' || event->key.key == TUI_KEY_ESCAPE) {
+        if (leave_room(data, m_request_q) == -1) {
+            *fault = FAULT_LOCAL;
+        }
+        return;
+    }
+
+    PlayerInputKey key;
+    if (bind_key(event, &key)) {
+        // latched, not sent: the frame tick is what turns presses into
+        // requests, which bounds the request rate to the frame rate and
+        // matches the per-frame key array the server applies
+        data->input_latch[key] = true;
+    }
+}
+
+/*
+    One request per latched key. The bodies are the words the spec fixes for
+    each method, so the mapping is a table rather than a chain of ifs.
+*/
+static int flush_input_latch(AppData* data, HtttpOutboundMessageQueue* m_request_q) {
+    static const struct {
+        PlayerInputKey key;
+        const char* method;
+        const char* body;
+    } BINDINGS[] = {
+        {PLAYER_INPUT_KEY_MOVE_LEFT, "MOVE", "LEFT"},
+        {PLAYER_INPUT_KEY_MOVE_RIGHT, "MOVE", "RIGHT"},
+        {PLAYER_INPUT_KEY_ROTATE_RIGHT, "ROTATE", "CW"},
+        {PLAYER_INPUT_KEY_ROTATE_LEFT, "ROTATE", "CCW"},
+        {PLAYER_INPUT_KEY_SOFT_DROP, "DROP", "SOFT"},
+        {PLAYER_INPUT_KEY_LOCK_DOWN, "DROP", "HARD"},
+        {PLAYER_INPUT_KEY_HOLD, "HOLD", NULL},
+    };
+    static const size_t BINDING_COUNT = sizeof(BINDINGS) / sizeof(BINDINGS[0]);
+
+    char path[CLIENT_ROOM_MAX + 32];
+    if (snprintf(path, sizeof(path), "/room/%s/player/%ld", data->view.room,
+                 data->view.player_id) < 0) {
+        return -1;
+    }
+
+    for (size_t i = 0; i < BINDING_COUNT; i++) {
+        if (!data->input_latch[BINDINGS[i].key]) {
+            continue;
+        }
+        data->input_latch[BINDINGS[i].key] = false;
+
+        const char* const body = BINDINGS[i].body;
+        if (send_request(data, m_request_q, BINDINGS[i].method, path, body,
+                         body == NULL ? 0 : strlen(body), PENDING_INPUT, NULL) == -1) {
+            return -1;
+        }
+    }
+    return 0;
+}
+
 static void handle_input(AppData* data, const InputEventQueue* m_event_q,
                          HtttpOutboundMessageQueue* m_request_q, ClientFault* fault) {
     const size_t count = InputEventQueue_size(m_event_q);
@@ -441,6 +631,9 @@ static void handle_input(AppData* data, const InputEventQueue* m_event_q,
             }
             break;
         case INPUT_EVENT_KEY:
+            if (data->view.mode == MODE_GAME) {
+                handle_game_key(data, event, m_request_q, fault);
+            }
             break;
         case INPUT_EVENT_DIAGNOSTIC:
             note(&data->view, "%s", event->diagnostic);
@@ -456,15 +649,21 @@ void AppData_step(AppData* data, const InputEventQueue* m_event_q,
                   const HtttpParsedMessageQueue* m_parsed_q,
                   HtttpOutboundMessageQueue* m_request_q,
                   bool frame_tick, ClientFault* fault) {
-    (void)frame_tick;
-
     if (*fault != FAULT_NONE) {
         return;
     }
 
-    route_inbound(data, m_parsed_q, fault);
+    route_inbound(data, m_parsed_q, m_request_q, fault);
     if (*fault != FAULT_NONE) {
         return;
     }
     handle_input(data, m_event_q, m_request_q, fault);
+    if (*fault != FAULT_NONE) {
+        return;
+    }
+
+    if (frame_tick && data->view.mode == MODE_GAME &&
+        flush_input_latch(data, m_request_q) == -1) {
+        *fault = FAULT_LOCAL;
+    }
 }

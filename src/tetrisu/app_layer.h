@@ -3,6 +3,7 @@
 
 #include "htttp_layer.h"
 #include "input_layer.h"
+#include "state_codec.h"
 #include "tetrisbrain.h"
 #include "type.h"
 #include <stdint.h>
@@ -28,12 +29,18 @@ typedef enum {
     PENDING_GENERIC,      // `htttp` — print the response verbatim
     PENDING_SET_NAME,
     PENDING_WHOAMI,
+    PENDING_JOIN,         // on 2xx, ask the server to start the room
+    PENDING_START,        // on 2xx, switch to MODE_GAME
+    PENDING_LEAVE,        // on any answer, switch back to MODE_SHELL
+    PENDING_INPUT,        // silent unless the server refused the input
 } PendingKind;
 
 typedef struct {
     PendingKind kind;
     char name[CLIENT_NAME_MAX];   // SET_NAME only: what was asked for
 } PendingRequest;
+
+#define CLIENT_ROOM_MAX 16
 
 #define RING_BUFFER_ELEM_TYPE PendingRequest
 #define RING_BUFFER_TYPEDEF PendingRequestQueue
@@ -58,9 +65,10 @@ typedef struct {
     long player_id;               // -1 until a response told us
     bool connected;
 
-    State board;                  // last STATE push, libtetrisbrain's type
-    bool board_valid;
-    uint64_t board_seq;           // monotone, so the UI can skip redundant draws
+    char room[CLIENT_ROOM_MAX];   // the room the client believes it is in
+    GameView game;                // last STATE push, decoded
+    bool game_valid;
+    uint64_t game_seq;            // monotone, so the UI can skip redundant draws
 
     TranscriptQueue transcript;   // shell lines and diagnostics, newest last
     bool dirty;                   // set on any change, cleared by UiData_render

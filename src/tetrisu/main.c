@@ -1,6 +1,9 @@
 #include "client.h"
 #include <signal.h>
 #include <stdio.h>
+#include <stdlib.h>
+#include <time.h>
+#include <unistd.h>
 
 static volatile sig_atomic_t running = 1;
 
@@ -34,6 +37,10 @@ int main(void) {
     if (install_signal_handlers() == -1) {
         return 1;
     }
+
+    // only used to pick a room code for `singleplayer`, so the weak seed is
+    // enough: a collision costs a retry with a different code
+    srand((unsigned)time(NULL) ^ (unsigned)getpid());
 
     Client client;
     if (client_init(&client) == -1) {
