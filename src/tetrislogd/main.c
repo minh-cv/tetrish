@@ -30,7 +30,70 @@ typedef struct {
     pthread_mutex_t clients_mu;
     int client_count;
     int max_clients;
+
+    /*
+        Records this daemon could not take: a connection refused past
+        max_clients, or a record whose write to disk failed. The spec requires
+        the count to be observable, so it is reported into the log itself on a
+        fixed interval rather than only at exit.
+    */
+    pthread_mutex_t dropped_mu;
+    unsigned long dropped;
+    unsigned long dropped_total;
 } LogdCtx;
+
+#define DROP_REPORT_SECONDS 30
+
+static void logd_count_drop(LogdCtx* ctx, unsigned long count) {
+    pthread_mutex_lock(&ctx->dropped_mu);
+    ctx->dropped += count;
+    ctx->dropped_total += count;
+    pthread_mutex_unlock(&ctx->dropped_mu);
+}
+
+/*
+    Writes one line and flushes, so a reader tailing the file sees records as
+    they arrive rather than a buffer at a time.
+*/
+static bool logd_write(LogdCtx* ctx, const void* data, size_t length) {
+    pthread_mutex_lock(&ctx->out_file_mu);
+    const bool ok = fwrite(data, length, 1, ctx->out_file) == 1 &&
+                    fflush(ctx->out_file) != EOF;
+    pthread_mutex_unlock(&ctx->out_file_mu);
+    return ok;
+}
+
+/*
+    Emitted every DROP_REPORT_SECONDS while anything was dropped, and once more
+    at shutdown, which is what makes the counter observable without a second
+    channel out of the daemon.
+*/
+static void logd_report_drops(LogdCtx* ctx) {
+    pthread_mutex_lock(&ctx->dropped_mu);
+    const unsigned long dropped = ctx->dropped;
+    const unsigned long total = ctx->dropped_total;
+    ctx->dropped = 0;
+    pthread_mutex_unlock(&ctx->dropped_mu);
+
+    if (dropped == 0) {
+        return;
+    }
+
+    char line[160];
+    time_t now = time(NULL);
+    struct tm tm_now;
+    localtime_r(&now, &tm_now);
+    char stamp[32];
+    strftime(stamp, sizeof(stamp), "%Y-%m-%d %H:%M:%S", &tm_now);
+
+    const int written = snprintf(line, sizeof(line),
+                                 "[%s][tetrislogd][WARN][logger] dropped %lu records in last %ds"
+                                 " (%lu total)\n",
+                                 stamp, dropped, DROP_REPORT_SECONDS, total);
+    if (written > 0) {
+        logd_write(ctx, line, (size_t)written);
+    }
+}
 
 typedef struct {
     int fd;
@@ -63,13 +126,11 @@ static void* client_thread_main(void* arg_v) {
             break;
         }
 
-        pthread_mutex_lock(&ctx->out_file_mu);
-        bool write_ok = fwrite(frame, frame_length, 1, ctx->out_file) == 1 &&
-                         fflush(ctx->out_file) != EOF;
-        pthread_mutex_unlock(&ctx->out_file_mu);
+        const bool write_ok = logd_write(ctx, frame, frame_length);
         free(frame);
         if (!write_ok) {
             perror("fwrite/fflush");
+            logd_count_drop(ctx, 1);
             break;
         }
     }
@@ -191,6 +252,8 @@ int main() {
     DTOR_INSERT(dtor, mutex_destroy_ptr, &ctx.out_file_mu);
     pthread_mutex_init(&ctx.clients_mu, NULL);
     DTOR_INSERT(dtor, mutex_destroy_ptr, &ctx.clients_mu);
+    pthread_mutex_init(&ctx.dropped_mu, NULL);
+    DTOR_INSERT(dtor, mutex_destroy_ptr, &ctx.dropped_mu);
     ctx.max_clients = cfg.max_clients;
 
     FILE* out_file = fopen(cfg.log_path, "a");
@@ -207,6 +270,8 @@ int main() {
     }
     DTOR_INSERT(dtor, close_ptr, &fd);
     DTOR_INSERT(dtor, unlink_cfg_log_ipc, &cfg);
+
+    time_t last_drop_report = time(NULL);
 
     while (running) {
         if (flush) {
@@ -266,6 +331,15 @@ int main() {
 
         struct pollfd pfd = { .fd = fd, .events = POLLIN, .revents = 0 };
         int ready = poll(&pfd, 1, 1000);
+
+        // the poll timeout is the clock the summary runs on, so an idle daemon
+        // still reports what it dropped while it was busy
+        const time_t now = time(NULL);
+        if (now - last_drop_report >= DROP_REPORT_SECONDS) {
+            last_drop_report = now;
+            logd_report_drops(&ctx);
+        }
+
         if (ready == -1) {
             if (errno == EINTR) {
                 continue;
@@ -296,6 +370,8 @@ int main() {
         if (full) {
             fprintf(stderr, "logd_max_clients reached, rejecting connection\n");
             close(client_fd);
+            // every record that producer would have sent is a record lost
+            logd_count_drop(&ctx, 1);
             continue;
         }
 
@@ -334,6 +410,8 @@ int main() {
         }
         nanosleep(&drain_ts, NULL);
     }
+
+    logd_report_drops(&ctx);
 
     if (fflush(out_file) == -1) {
         perror("fflush");

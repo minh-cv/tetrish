@@ -154,6 +154,9 @@ int server_init(Server* server) {
         DTOR_ERR_RETURN(errdtor, dtor, -1);
     }
 
+    LOGGER_LOG(LOG_INFO, "server", "tetrisd pid=%d listening on %s:%d",
+               (int)getpid(), server->cfg.address, server->cfg.port);
+
     // connect and flush what startup logged, rather than waiting for the first
     // epoll_wait to return, which on an idle server can be a long time
     const EpollSignals quiet = {0};
@@ -163,6 +166,7 @@ int server_init(Server* server) {
 }
 
 void server_free(Server* server) {
+    LOGGER_LOG(LOG_INFO, "server", "tetrisd stopping");
     AppData_free(&server->app);
     HtttpData_free(&server->htttp);
     AuthData_free(&server->auth);

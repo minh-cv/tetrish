@@ -75,6 +75,7 @@ void AppData_close(AppData* data, const SparseSet_bool* close_fds) {
             continue;
         }
 
+        LOGGER_LOG(LOG_INFO, "app", "fd=%zu disconnected", fd);
         AppEntry* const entry = SparseSet_AppEntry_get(&data->entries, fd);
         world_close(&data->world, entry->self);
         entry->self = player_ref_null();
@@ -112,6 +113,11 @@ static int respond_one(AppData* data, PlayerRef actor, long self_id, const Htttp
         const HtttpStatus status = frame_status_code(parsed->status, &reason);
         return app_effect_reply(&data->sink, actor, status, reason, strlen(reason));
     }
+
+    // the spec requires every request to be logged; this is the one place a
+    // request becomes visible as a request
+    LOGGER_LOG(LOG_INFO, "app", "fd=%ld request %s %s", self_id,
+               parsed->message.request.method, parsed->message.request.path);
 
     AppCommand command;
     const AppCommandStatus parse_status = app_command_parse(&parsed->message, self_id, &command);
@@ -305,6 +311,13 @@ void AppData_flush(AppData* data, SparseSet_HtttpOutboundMessageQueue* m_respons
         if (!SparseSet_AppEntry_contains(&data->entries, fd) ||
             SparseSet_bool_contains(err_fds, fd)) {
             continue;
+        }
+
+        if (effect->kind == APP_EFFECT_REPLY) {
+            LOGGER_LOG(LOG_INFO, "app", "fd=%zu response %d", fd, (int)effect->status);
+        }
+        else {
+            LOGGER_LOG(LOG_DEBUG, "app", "fd=%zu event %s", fd, effect->method);
         }
 
         HtttpOutboundMessage message;

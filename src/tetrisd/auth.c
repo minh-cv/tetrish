@@ -191,6 +191,7 @@ static int handshake_or_decrypt_frame(AuthData* data, AuthEntry* entry, const Re
             return -1;
         }
         entry->auth_state = AUTH_SYMKEY;
+        LOGGER_LOG(LOG_INFO, "auth", "fd=%zu nonce signed, certificate sent", fd);
         return 0;
     }
     case AUTH_SYMKEY: {
@@ -203,6 +204,7 @@ static int handshake_or_decrypt_frame(AuthData* data, AuthEntry* entry, const Re
         memcpy(entry->key, session_key, SESSION_KEY_LEN);
         free(session_key);
         entry->auth_state = AUTH_DONE;
+        LOGGER_LOG(LOG_INFO, "auth", "fd=%zu secure session established", fd);
         return 0;
     }
     case AUTH_DONE: {
@@ -281,6 +283,7 @@ void AuthData_handshake_or_decrypt(AuthData* data, const SparseSet_ReaderFrameQu
         }
 
         if (failed) {
+            LOGGER_LOG(LOG_WARN, "auth", "fd=%zu closed: handshake or decryption failed", fd);
             *SparseSet_bool_activate(err_fds, fd) = true;
             if (SparseSet_AuthFrameQueue_contains(m_decrypted_out, fd)) {
                 auth_queue_drain(SparseSet_AuthFrameQueue_get(m_decrypted_out, fd));
