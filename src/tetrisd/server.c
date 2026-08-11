@@ -11,6 +11,8 @@ static DTOR_WRAPPER_DEFINE(Epoll_free)
 static DTOR_WRAPPER_DEFINE(PlayerIo_free)
 static DTOR_WRAPPER_DEFINE(AuthData_free)
 static DTOR_WRAPPER_DEFINE(HtttpData_free)
+static DTOR_WRAPPER_DEFINE(AppData_free)
+
 
 int server_init(Server* server) {
     DTOR_DEFINE(errdtor, 10);
@@ -58,6 +60,11 @@ int server_init(Server* server) {
     }
     DTOR_INSERT(errdtor, HtttpData_free, &server->htttp);
 
+    if (AppData_init(&server->app, server->cfg.max_fds) == -1) {
+        DTOR_ERR_RETURN(errdtor, dtor, -1);
+    }
+    DTOR_INSERT(errdtor, AppData_free, &server->app);
+
     if (Epoll_accept_one(&server->epoll, server->acceptor.listen_fd, EPOLL_ENTRY_ACCEPTOR, EPOLLIN) == -1) {
         DTOR_ERR_RETURN(errdtor, dtor, -1);
     }
@@ -66,6 +73,7 @@ int server_init(Server* server) {
 }
 
 void server_free(Server* server) {
+    AppData_free(&server->app);
     HtttpData_free(&server->htttp);
     AuthData_free(&server->auth);
     PlayerIo_free(&server->player_io);
@@ -95,6 +103,7 @@ void server_tick(Server* server) {
                         server->cfg.client_capacity);
         HtttpData_accept(&server->htttp, &server->acceptor.accepted, &server->epoll.player_close_fds,
                          server->cfg.client_capacity);
+AppData_accept(&server->app, &server->acceptor.accepted, &server->epoll.player_close_fds);
     }
 
     PlayerIo_read(&server->player_io, &server->player_io.players_reading,
@@ -106,9 +115,8 @@ void server_tick(Server* server) {
     HtttpData_parse(&server->htttp, &server->auth.decrypt_qs, &server->htttp.parsed_qs,
                     &server->epoll.player_close_fds);
 
-    // TODO: placeholder until the real application layer sits between
-    // parsed_qs and response_qs
-    HtttpData_respond_placeholder(&server->htttp, &server->htttp.parsed_qs, &server->htttp.response_qs,
+    // TODO: dummy application layer — replace the echo with real game logic
+    AppData_respond(&server->app, &server->htttp.parsed_qs, &server->htttp.response_qs,
                                   &server->epoll.player_close_fds);
 
     HtttpData_serialize(&server->htttp, &server->htttp.response_qs, &server->auth.encrypt_qs,
@@ -128,6 +136,7 @@ void server_tick(Server* server) {
     PlayerIo_close(&server->player_io, &server->epoll.player_close_fds);
     AuthData_close(&server->auth, &server->epoll.player_close_fds);
     HtttpData_close(&server->htttp, &server->epoll.player_close_fds);
+AppData_close(&server->app, &server->epoll.player_close_fds);
     Epoll_close(&server->epoll, &server->epoll.player_close_fds);
 
     Acceptor_reset(&server->acceptor);

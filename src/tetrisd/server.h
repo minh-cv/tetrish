@@ -7,6 +7,7 @@
 #include "epoll.h"
 #include "htttp_layer.h"
 #include "player_io.h"
+#include "app_layer.h"
 
 typedef struct {
     struct config_var cfg;
@@ -15,6 +16,7 @@ typedef struct {
     PlayerIo player_io;
     AuthData auth;
     HtttpData htttp;
+    AppData app;
 } Server;
 
 int server_init(Server* server);

@@ -1,0 +1,122 @@
+#ifndef TETRISH_TETRISD_APP_LAYER_H
+#define TETRISH_TETRISD_APP_LAYER_H
+
+#include "htttp_layer.h"
+#include "type.h"
+
+/*!
+    @brief Per-fd persistent state. Currently a membership marker only,
+    since the dummy responder is stateless per request; real per-fd game
+    state (e.g. the board, via libtetrisbrain) would go here.
+*/
+typedef struct {
+    char _reserved;
+} AppEntry;
+
+#define SPARSE_SET_ELEM_TYPE AppEntry
+#define SPARSE_SET_TYPEDEF SparseSet_AppEntry
+#include "collection/sparse_set.h"
+
+/*!
+    The top layer of the pipeline: it owns no queues of its own. Each layer
+    owns the queue pair at its boundary with the layer above, so both the
+    parsed input ( @c parsed_qs ) and the response output ( @c response_qs )
+    it works on belong to the htttp layer.
+
+    @invariant A key @c fd is in @c entries iff the fd has been accepted and
+    not closed.
+*/
+typedef struct {
+    SparseSet_AppEntry entries;
+} AppData;
+
+/*!
+    @brief allocate memory to members of @p data
+
+    @pre @p data is not initialized
+
+    @post @c entries has capacity @p max_entries and size `0`, with all
+          elements uninitialized.
+
+    @return -1 if failed, 0 otherwise
+*/
+int AppData_init(AppData* data, size_t max_entries);
+
+/*!
+    @brief release all memory in @p data
+
+    @pre @p data has not been freed
+
+    @post All initialized entries in @c entries are uninitialized
+    @post All collection members are freed
+*/
+void AppData_free(AppData* data);
+
+/*!
+    @brief initialize entries for each entry in @p fds
+
+    @pre entries in @p fds exist neither in @c entries nor @p err_fds
+
+    @post entries in @p fds not marked in @p err_fds are in @c entries .
+          Inserting a membership marker cannot fail within the capacity
+          contract, so no fd is ever marked in @p err_fds here.
+
+    @note if an entry in @p fds appear in @c entries or @c err_fds , that entry is ignored. This is not part of the contract.
+*/
+void AppData_accept(
+    AppData* data,
+    const Vec_Fd* fds,
+    SparseSet_bool* err_fds
+);
+
+/*!
+    @brief remove entries in @c entries for each entry in @p close_fds
+
+    @pre the entries in @p close_fds must exist in @c entries
+
+    @post the slot in @p close_fds is uninitialized in @c entries
+
+    @note if an entry does not exist in @c entries , it is ignored. This is not part of the contract.
+*/
+void AppData_close(
+    AppData* data,
+    const SparseSet_bool* close_fds
+);
+
+/*!
+    @brief Dummy application layer: for every fd in @p m_parsed_qs , build
+           one default response per parsed entry into its slot in
+           @p m_response_qs , marking fds whose response could not be
+           built in @p err_fds .
+
+    A valid request gets a 200 echoing its body. Anything else — a parse
+    error (including in-band transport errors: decrypt failure, oversized
+    read) or a response-typed message — gets a bodyless 400; the
+    connection stays open either way.
+
+    @pre  No entry of @p m_parsed_qs is already marked in @p err_fds
+    @pre  @p m_parsed_qs and @p m_response_qs slots were accepted with the
+          same queue capacity (see server_tick's accept fan-out), so the
+          output always fits.
+
+    @post For each failed fd in @p m_parsed_qs , it is newly marked in
+          @p err_fds with its slot in @p m_response_qs inactive, along
+          with messages there freed. Pre-existing entries of @p err_fds
+          are preserved.
+    @post Entry in @p m_response_qs is active iff its queue has size of at least 1. Messages appended there are owned by @p m_response_qs and reclaimed by HtttpData_reset.
+
+    @note If the first precondition is violated, the overlapping entries
+          are currently skipped. If the second is violated, the fd is
+          currently failed like an operation failure. Neither behavior is
+          part of the contract and must not be relied upon.
+
+    TODO: replace the echo with real game logic (libtetrisbrain).
+*/
+void AppData_respond(
+    AppData* data,
+    const SparseSet_HtttpParsedMessageQueue* m_parsed_qs,
+    SparseSet_HtttpOutboundMessageQueue* m_response_qs,
+    SparseSet_bool* err_fds
+);
+
+#endif

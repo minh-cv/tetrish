@@ -26,9 +26,8 @@ typedef struct {
 
 /*!
     @brief Per-fd persistent state. Currently a membership marker only,
-    since parsing is per-frame and the placeholder response carries no
-    session state; real per-fd HTTTP state (e.g. keep-alive bookkeeping)
-    would go here.
+    since parsing is per-frame; real per-fd HTTTP state (e.g. keep-alive
+    bookkeeping) would go here.
 */
 typedef struct {
     char _reserved;
@@ -142,43 +141,6 @@ void HtttpData_parse(
     HtttpData* data,
     const SparseSet_AuthFrameQueue* m_decrypt_qs,
     SparseSet_HtttpParsedMessageQueue* m_parsed_qs,
-    SparseSet_bool* err_fds
-);
-
-/*!
-    @brief Placeholder for the application layer: for every fd in
-           @p m_parsed_qs , build one default response per parsed entry
-           into its slot in @p m_response_qs , marking fds whose response
-           could not be built in @p err_fds .
-
-    A valid request gets a 200 echoing its body. Anything else — a parse
-    error (including in-band transport errors: decrypt failure, oversized
-    read) or a response-typed message — gets a bodyless 400; the
-    connection stays open either way.
-
-    @pre  No entry of @p m_parsed_qs is already marked in @p err_fds
-    @pre  @p m_parsed_qs and @p m_response_qs slots were accepted with the
-          same queue capacity (see server_tick's accept fan-out), so the
-          output always fits.
-
-    @post For each failed fd in @p m_parsed_qs , it is newly marked in
-          @p err_fds with its slot in @p m_response_qs inactive, along
-          with messages there freed. Pre-existing entries of @p err_fds
-          are preserved.
-    @post Entry in @p m_response_qs is active iff its queue has size of at least 1.
-
-    @note If the first precondition is violated, the overlapping entries
-          are currently skipped. If the second is violated, the fd is
-          currently failed like an operation failure. Neither behavior is
-          part of the contract and must not be relied upon.
-
-    TODO: replace with the real application layer between @c parsed_qs and
-    @c response_qs .
-*/
-void HtttpData_respond_placeholder(
-    HtttpData* data,
-    const SparseSet_HtttpParsedMessageQueue* m_parsed_qs,
-    SparseSet_HtttpOutboundMessageQueue* m_response_qs,
     SparseSet_bool* err_fds
 );
 
