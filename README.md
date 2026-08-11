@@ -191,5 +191,7 @@ pointed at a shorter absolute path.
 * `tetrisd` has no `SIGHUP` config reload and no `SIGUSR1` state dump yet;
   `tetrislogd` does handle `SIGHUP`.
 * There is no automated test suite. The layers were exercised by hand against a
-  running daemon; `world` and `game` were split out of the layer shell
-  specifically so they can be driven without sockets when tests are written.
+  running daemon, and `tetrisd`, `tetrisu`, `tetrisctl` and `tetrish` each run a
+  full session under valgrind with no leaks and no errors; `world` and `game`
+  were split out of the layer shell specifically so they can be driven without
+  sockets when tests are written.
