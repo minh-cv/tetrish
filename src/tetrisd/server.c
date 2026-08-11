@@ -141,7 +141,11 @@ int server_init(Server* server) {
     }
     DTOR_INSERT(errdtor, HtttpData_free, &server->htttp);
 
-    if (AppData_init(&server->app, server->cfg.max_fds) == -1) {
+    // one effect per parsed message per fd is the worst case a tick can
+    // produce before rooms add fan-out
+    if (AppData_init(&server->app, server->cfg.max_fds,
+                     (size_t)server->cfg.max_fds * server->cfg.client_capacity,
+                     server->cfg.app_arena_capacity) == -1) {
         DTOR_ERR_RETURN(errdtor, dtor, -1);
     }
     DTOR_INSERT(errdtor, AppData_free, &server->app);
@@ -203,9 +207,9 @@ void server_tick(Server* server) {
     HtttpData_parse(&server->htttp, &server->auth.decrypt_qs, &server->htttp.parsed_qs,
                     &server->epoll.player_close_fds);
 
-    // TODO: dummy application layer — replace the echo with real game logic
-    AppData_respond(&server->app, &server->htttp.parsed_qs, &server->htttp.response_qs,
-                    &server->epoll.player_close_fds);
+    AppData_respond(&server->app, &server->htttp.parsed_qs, &server->epoll.player_close_fds);
+
+    AppData_flush(&server->app, &server->htttp.response_qs, &server->epoll.player_close_fds);
 
     HtttpData_serialize(&server->htttp, &server->htttp.response_qs, &server->auth.encrypt_qs,
                         &server->epoll.player_close_fds);
@@ -231,6 +235,7 @@ void server_tick(Server* server) {
     PlayerIo_reset(&server->player_io);
     AuthData_reset(&server->auth);
     HtttpData_reset(&server->htttp);
+    AppData_reset(&server->app);
     Epoll_reset(&server->epoll);
 
     logger_tick(server, &signals);

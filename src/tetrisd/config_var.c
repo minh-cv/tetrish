@@ -53,6 +53,9 @@ int config_var_init(struct config_var* cfg_var) {
     static const unsigned int LOGGER_RECONNECT_SECONDS_DEFAULT = 5;
     static const unsigned int LOGGER_CAPACITY_DEFAULT = 512;
     static const unsigned int CLIENT_CAPACITY_DEFAULT = 8;
+    // sized for a full board snapshot per seat per tick, with slack
+    static const unsigned int APP_ARENA_CAPACITY_DEFAULT = 1u << 20;
+    static const unsigned int APP_ARENA_CAPACITY_MIN = 4096;
     // the nonce response queues two frames back to back, so anything smaller stalls the handshake.
     static const unsigned int CLIENT_CAPACITY_MIN = 2;
 
@@ -140,6 +143,12 @@ int config_var_init(struct config_var* cfg_var) {
         DTOR_ERR_RETURN(errdtor, dtor, -1);
     }
 
+    unsigned int app_arena_capacity;
+    if (config_get_uint_arg(&config, "app_arena_capacity", APP_ARENA_CAPACITY_DEFAULT,
+                            APP_ARENA_CAPACITY_MIN, &app_arena_capacity) == -1) {
+        DTOR_ERR_RETURN(errdtor, dtor, -1);
+    }
+
     char* log_ipc = config_get_path(&config, "log_ipc", project_dir);
     if (log_ipc == NULL) {
         fputs("log_ipc invalid\n", stderr);
@@ -159,6 +168,7 @@ int config_var_init(struct config_var* cfg_var) {
         .logger_reconnect_seconds = logger_reconnect_seconds,
         .logger_capacity = logger_capacity,
         .client_capacity = client_capacity,
+        .app_arena_capacity = app_arena_capacity,
     };
 
     *cfg_var = new_cfg;
