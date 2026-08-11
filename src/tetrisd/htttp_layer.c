@@ -167,7 +167,8 @@ void HtttpData_parse(HtttpData* data, const SparseSet_AuthFrameQueue* m_decrypt_
             continue;
         }
 
-        for (size_t j = 0; j < count; j++) {
+        HtttpParsedMessageQueue* out = SparseSet_HtttpParsedMessageQueue_activate(m_parsed_qs, fd);
+        for (size_t j = 0; j < pending; j++) {
             const AuthFrame* frame = AuthFrameQueue_at(q, j);
             HtttpParsedMessage parsed;
             memset(&parsed, 0, sizeof(parsed));
@@ -185,7 +186,6 @@ void HtttpData_parse(HtttpData* data, const SparseSet_AuthFrameQueue* m_decrypt_
                 parsed.status = HTTTP_LAYER_PARSE_ERROR;
             }
 
-            HtttpParsedMessageQueue* out = SparseSet_HtttpParsedMessageQueue_activate(m_parsed_qs, fd);
             const int err = HtttpParsedMessageQueue_push_back(out, &parsed);
             assert(err != -1);
             (void)err;
@@ -210,6 +210,8 @@ void HtttpData_respond_placeholder(HtttpData* data, const SparseSet_HtttpParsedM
 
         bool failed = false;
         const size_t count = HtttpParsedMessageQueue_size(q);
+HtttpOutboundMessageQueue* out = SparseSet_HtttpOutboundMessageQueue_activate(m_response_qs, fd);
+
         for (size_t j = 0; j < count; j++) {
             const HtttpParsedMessage* parsed = HtttpParsedMessageQueue_at(q, j);
 
@@ -230,7 +232,6 @@ void HtttpData_respond_placeholder(HtttpData* data, const SparseSet_HtttpParsedM
                 break;
             }
 
-            HtttpOutboundMessageQueue* out = SparseSet_HtttpOutboundMessageQueue_activate(m_response_qs, fd);
             const int err = HtttpOutboundMessageQueue_push_back(out, &outbound);
             assert(err != -1 && "parsed_qs and response_qs share cfg.client_capacity");
             if (err == -1) {
@@ -267,6 +268,8 @@ void HtttpData_serialize(HtttpData* data, const SparseSet_HtttpOutboundMessageQu
 
         bool failed = false;
         const size_t count = HtttpOutboundMessageQueue_size(q);
+        AuthFrameQueue* out = SparseSet_AuthFrameQueue_activate(m_auth_qs, fd);
+        
         for (size_t j = 0; j < count; j++) {
             const HtttpOutboundMessage* outbound = HtttpOutboundMessageQueue_at(q, j);
 
@@ -286,7 +289,6 @@ void HtttpData_serialize(HtttpData* data, const SparseSet_HtttpOutboundMessageQu
                 { { serialized, serialized_len }, READER_FRAME_OK },
                 AUTH_FRAME_OK,
             };
-            AuthFrameQueue* out = SparseSet_AuthFrameQueue_activate(m_auth_qs, fd);
             const int err = AuthFrameQueue_push_back(out, &response_frame);
             assert(err != -1 && "response_qs and auth_qs share cfg.client_capacity");
             if (err == -1) {
