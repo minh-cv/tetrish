@@ -174,7 +174,7 @@ bool apply_spawn(State* s) {
 }
 
 bool apply_player_inputs(State* s, const bool (*inputs)[PLAYER_INPUT_KEY_COUNT]) {
-    if ((*inputs)[PLAYER_INPUT_KEY_HOLD]) {
+    if ((*inputs)[PLAYER_INPUT_KEY_HOLD] && s->hold_state.hold_status != HOLD_INACTIVE) {
         return apply_hold(s);
     }
 
