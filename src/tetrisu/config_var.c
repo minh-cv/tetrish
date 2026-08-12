@@ -61,6 +61,7 @@ int config_var_init(struct config_var* cfg_var) {
     else {
         address = config.argv[address_idx];
         config.argv[address_idx] = NULL;
+        DTOR_INSERT(errdtor, free, address);
     }
 
     char* cert_path = config_get_path(&config, "ca_path", project_dir);
@@ -84,4 +85,6 @@ int config_var_init(struct config_var* cfg_var) {
 void config_var_free(struct config_var* cfg) {
     free(cfg->ca_path);
     free(cfg->address);
+    cfg->ca_path = NULL;
+    cfg->address = NULL;
 }
