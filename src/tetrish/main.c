@@ -45,7 +45,8 @@ int body(FILE* input) {
         }
 
         if (input != stdin) {
-            if (strncmp(cmd[0], "PATH=", 5) == 0) {
+            char* equals = strchr(cmd[0], '=');
+            if (equals != NULL && equals != cmd[0]) {
                 last_status = set_env_var((char*[]){NULL, cmd[0], NULL});
                 free_command(cmd);
                 continue;
@@ -122,5 +123,6 @@ int main(void) {
         body(shellrc);
         fclose(shellrc);
     }
+
     return body(stdin);
 }
