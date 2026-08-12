@@ -84,7 +84,7 @@ static bool apply_hold(State* s) {
         return false;
     }
     if (prev_hold_status == HOLD_EMPTY) {
-        s->spawn_type = next_bag(&s->bag_state);
+        s->spawn_type = next_bag(&s->bag_state, &s->rng);
     }
     if (prev_hold_status == HOLD_ACTIVE) {
         s->spawn_type = prev_type;
@@ -96,10 +96,10 @@ static bool apply_receive_garbage(State* s) {
     int received = s->garbage_balance;
     if (received > 0) {
         s->garbage_balance = 0;
-        if (receive_garbage(&s->board_state, received)) return true;
+        if (receive_garbage(&s->board_state, received, &s->rng)) return true;
     }
 
-    s->spawn_type = next_bag(&s->bag_state);
+    s->spawn_type = next_bag(&s->bag_state, &s->rng);
     return apply_spawn(s);
 }
 

@@ -11,6 +11,7 @@ target_include_directories(libtetrissh PRIVATE include)
 
 add_library(libtetrisbrain
     src/libtetrisbrain/control.c
+    src/libtetrisbrain/rng.c
     src/libtetrisbrain/state.c
     src/libtetrisbrain/static.c)
 target_include_directories(libtetrisbrain PRIVATE include)
