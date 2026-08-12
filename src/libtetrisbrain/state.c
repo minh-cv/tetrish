@@ -27,7 +27,7 @@ State init_state(void) {
             s.board_state.board.cells[r][c] = TETROMINO_CELL_EMPTY;
         }
     }
-    s.bag_state.bag1_offset = TETROMINO_TYPE_COUNT - 1;
+    s.bag_state.bag1_offset = -1;
     fill_random_bag(s.bag_state.bag1);
     fill_random_bag(s.bag_state.bag2);
     s.spawn_type = next_bag(&s.bag_state);
@@ -351,7 +351,7 @@ void queue_garbage(State* s, int amount) {
     s->garbage_balance += amount;
 }
 
-bool is_perfect_clear(const Board* s) {
+static bool is_perfect_clear(const Board* s) {
     for (int i = 0; i < BOARD_HEIGHT; i++) {
         for (int j = 0; j < BOARD_WIDTH; j++) {
             if ((s->cells)[i][j] != TETROMINO_CELL_EMPTY) return false;
