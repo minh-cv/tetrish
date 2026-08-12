@@ -112,6 +112,7 @@ static bool apply_store_garbage(State* s, int lines_cleared, TSpinType t_spin) {
     if (lines_cleared >= 1) {
         int counter_amount = get_sending_garbage(s, lines_cleared, t_spin);
         s->garbage_balance -= counter_amount;
+        add_score(s, counter_amount);
     }
     return apply_unset_hold_inactive(s);
 }

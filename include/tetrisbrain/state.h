@@ -4,6 +4,12 @@
 #include "rng.h"
 #include "static.h"
 
+#include <limits.h>
+
+// Score awarded per line of garbage a clear would send.
+#define SCORE_PER_GARBAGE 100
+#define SCORE_MAX INT_MAX
+
 typedef struct Board {
     TetrominoCellType cells[BOARD_HEIGHT][BOARD_WIDTH];
 } Board;
@@ -73,6 +79,7 @@ typedef struct State {
     MovementState movement_state;
     int garbage_balance;
     int back_to_back_count;
+    int score;
     Rng rng;
 } State;
 
@@ -103,6 +110,7 @@ bool receive_garbage(BoardState* s, int count, Rng* rng);
 void hold(HoldState* hold_state, TetrominoType current_type);
 void queue_garbage(State* s, int amount);
 int get_sending_garbage(const State* s, int lines_cleared, TSpinType t_spin);
+void add_score(State* s, int garbage_amount);
 TSpinType get_t_spin_type(const Tetromino* t, int last_offset_used, bool is_just_rotated, const Board* board);
 
 #endif

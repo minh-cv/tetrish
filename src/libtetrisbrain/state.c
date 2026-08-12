@@ -360,6 +360,14 @@ static bool is_perfect_clear(const Board* s) {
     return true;
 }
 
+void add_score(State* s, int garbage_amount) {
+    assert(garbage_amount >= 0);
+
+    // Widen first, then saturate — a long game must never wrap the score negative.
+    long long total = (long long)s->score + (long long)garbage_amount * SCORE_PER_GARBAGE;
+    s->score = total > SCORE_MAX ? SCORE_MAX : (int)total;
+}
+
 int get_sending_garbage(const State* s, int lines_cleared, TSpinType t_spin) {
     static const int COMBO_AMOUNTS[] = {0, 0, 1, 1, 2, 2, 3, 3, 4, 4, 4};
     static const int T_SPIN_AMOUNTS[] = {0, 2, 4, 6};
