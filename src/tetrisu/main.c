@@ -66,15 +66,22 @@ static int execute_effect(
     case APP_EFFECT_NET_CONNECT:
         result = net_client_connect(runtime->net, now_ms, &events);
         break;
-    case APP_EFFECT_NET_SEND:
-        result = net_client_send(
+    case APP_EFFECT_NET_SEND: {
+        const ClientRequest request = {
+            .method = effect->method,
+            .path = effect->path,
+            .body = effect->payload.ptr,
+            .body_len = effect->payload.len,
+            .content_type = effect->content_type,
+        };
+        result = net_client_send_request(
             runtime->net,
-            effect->payload.ptr,
-            effect->payload.len,
+            &request,
             now_ms,
             &events
         );
         break;
+    }
     case APP_EFFECT_NET_DISCONNECT:
         result = net_client_disconnect(runtime->net, &events);
         break;

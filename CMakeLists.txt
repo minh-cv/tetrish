@@ -35,9 +35,12 @@ add_library(cmdline src/cmdline/cmdline.c)
 target_include_directories(cmdline PUBLIC include external/corestack/include)
 
 add_executable(tetrisctl src/tetrisctl/main.c)
-add_executable(tetrisd src/tetrisd/main.c src/tetrisd/server.c src/tetrisd/config_var.c src/tetrisd/sig.c src/tetrisd/socket.c src/tetrisd/acceptor.c src/tetrisd/epoll.c src/tetrisd/player_io.c src/tetrisd/auth.c)
+add_executable(tetrisd src/tetrisd/main.c src/tetrisd/server.c
+    src/tetrisd/application.c src/tetrisd/config_var.c src/tetrisd/sig.c
+    src/tetrisd/socket.c src/tetrisd/acceptor.c src/tetrisd/epoll.c
+    src/tetrisd/player_io.c src/tetrisd/auth.c src/tetrisd/timer.c)
 target_include_directories(tetrisd PRIVATE src/tetrisd)
-target_link_libraries(tetrisd PRIVATE daemon logger network common tetrissh config)
+target_link_libraries(tetrisd PRIVATE daemon logger network common tetrissh config htttp)
 target_compile_definitions(tetrisd PRIVATE
     $<$<BOOL:${TETRISH_TETRISD_NO_DAEMON}>:TETRISH_TETRISD_NO_DAEMON>
 )
@@ -51,18 +54,21 @@ target_compile_definitions(tetrislogd PRIVATE
     $<$<BOOL:${TETRISH_TETRISLOGD_NO_DAEMON}>:TETRISH_TETRISLOGD_NO_DAEMON>
 )
 
-set(TETRISU_SOURCES
-    src/tetrisu/app.c
-    src/tetrisu/command/parser.c
-    src/tetrisu/command/router.c
-    src/tetrisu/config_var.c
+set(TETRISU_NET_SOURCES
     src/tetrisu/net/client.c
     src/tetrisu/net/event.c
     src/tetrisu/net/htttp_codec.c
     src/tetrisu/net/inbound_policy.c
     src/tetrisu/net/message.c
     src/tetrisu/net/socket_transport.c
-    src/tetrisu/net/tetrissh_channel.c
+    src/tetrisu/net/tetrissh_channel.c)
+
+set(TETRISU_SOURCES
+    src/tetrisu/app.c
+    src/tetrisu/command/parser.c
+    src/tetrisu/command/router.c
+    src/tetrisu/config_var.c
+    ${TETRISU_NET_SOURCES}
     src/tetrisu/ui/terminal.c)
 
 add_executable(tetrisu src/tetrisu/main.c ${TETRISU_SOURCES})
@@ -83,6 +89,27 @@ if(BUILD_TESTING)
     target_include_directories(tetrisu_unit_tests PRIVATE src/tetrisu)
     target_link_libraries(tetrisu_unit_tests PRIVATE htttp)
     add_test(NAME tetrisu_unit_tests COMMAND tetrisu_unit_tests)
+
+    add_executable(tetrisu_system_probe
+        tests/tetrisu/system_probe.c
+        ${TETRISU_NET_SOURCES})
+    target_include_directories(tetrisu_system_probe PRIVATE src/tetrisu)
+    target_link_libraries(tetrisu_system_probe PRIVATE htttp common tetrissh)
+
+    find_program(TETRISH_BASH_EXECUTABLE bash)
+    find_program(TETRISH_OPENSSL_EXECUTABLE openssl)
+    if(TETRISH_BASH_EXECUTABLE AND TETRISH_OPENSSL_EXECUTABLE)
+        add_test(
+            NAME tetrisu_server_system
+            COMMAND
+                ${TETRISH_BASH_EXECUTABLE}
+                ${CMAKE_CURRENT_SOURCE_DIR}/tests/tetrisu/server_system_test.sh
+                $<TARGET_FILE:tetrisd>
+                $<TARGET_FILE:tetrislogd>
+                $<TARGET_FILE:tetrisu_system_probe>
+                ${TETRISH_OPENSSL_EXECUTABLE})
+        set_tests_properties(tetrisu_server_system PROPERTIES TIMEOUT 30)
+    endif()
 endif()
 
 add_library(perms src/tetrish/libs/perms.c)

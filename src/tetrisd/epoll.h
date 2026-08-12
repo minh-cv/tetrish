@@ -77,7 +77,8 @@ int Epoll_poll(
     EpollData* data,
     Vec_Fd* player_read,
     Vec_Fd* player_write,
-    bool* acceptor_readable
+    bool* acceptor_readable,
+    bool* state_timer_readable
 );
 
 /*!

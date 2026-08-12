@@ -124,6 +124,22 @@ int net_client_send(
     uint64_t now_ms,
     NetEventList* events
 ) {
+    const ClientRequest request = {
+        .method = "HTTTP",
+        .path = "",
+        .body = payload,
+        .body_len = length,
+        .content_type = "text/plain",
+    };
+    return net_client_send_request(client, &request, now_ms, events);
+}
+
+int net_client_send_request(
+    NetClient* client,
+    const ClientRequest* request,
+    uint64_t now_ms,
+    NetEventList* events
+) {
     if (client->state != NET_CLIENT_READY_IDLE) {
         return emit_error(
             client,
@@ -132,17 +148,10 @@ int net_client_send(
         );
     }
 
-    const ClientRequest request = {
-        .method = "HTTTP",
-        .path = "",
-        .body = payload,
-        .body_len = length,
-        .content_type = "text/plain",
-    };
     OwnedBytes plaintext;
     owned_bytes_init(&plaintext);
     ClientError error = client_error(CLIENT_ERROR_NONE, 0, NULL);
-    if (htttp_codec_encode_request(&request, &plaintext) == -1) {
+    if (htttp_codec_encode_request(request, &plaintext) == -1) {
         return emit_error(
             client,
             events,

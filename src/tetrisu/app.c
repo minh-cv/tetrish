@@ -21,19 +21,59 @@ static int replace_bytes(OwnedBytes* destination, const OwnedBytes* source) {
 static int push_effect(
     AppEffectList* effects,
     AppEffectType type,
+    const char* method,
+    const char* path,
+    const char* content_type,
     const void* payload,
     size_t payload_len
 ) {
     if (effects->count == APP_EFFECT_LIST_CAPACITY) {
         return -1;
     }
-    AppEffect effect = {.type = type};
+    AppEffect effect = {
+        .type = type,
+        .method = method,
+        .path = path,
+        .content_type = content_type,
+    };
     owned_bytes_init(&effect.payload);
     if (owned_bytes_copy(&effect.payload, payload, payload_len) == -1) {
         return -1;
     }
     effects->items[effects->count++] = effect;
     return 0;
+}
+
+static int push_simple_effect(AppEffectList* effects, AppEffectType type) {
+    return push_effect(effects, type, NULL, NULL, NULL, NULL, 0);
+}
+
+static int push_request_effect(
+    AppState* app,
+    AppEffectList* effects,
+    const char* method,
+    const void* payload,
+    size_t payload_len
+) {
+    if (app->connection != APP_CONNECTION_READY) {
+        set_notification(app, "Not connected");
+        return 0;
+    }
+    if (app->request != APP_REQUEST_IDLE) {
+        set_notification(app, "A request is already pending");
+        return 0;
+    }
+    app->request = APP_REQUEST_SUBMITTING;
+    app->view_dirty = true;
+    return push_effect(
+        effects,
+        APP_EFFECT_NET_SEND,
+        method,
+        "",
+        "text/plain",
+        payload,
+        payload_len
+    );
 }
 
 void app_init(AppState* app) {
@@ -71,42 +111,43 @@ static int reduce_command(
     case COMMAND_HELP:
         set_notification(
             app,
-            "Commands: help, htttp <text>, reconnect, disconnect, quit"
+            "Commands: htttp <text>, set-name <name>, whoami, reconnect, quit"
         );
         return 0;
     case COMMAND_QUIT:
         app->quit_requested = true;
         app->view_dirty = true;
-        return push_effect(effects, APP_EFFECT_QUIT, NULL, 0);
+        return push_simple_effect(effects, APP_EFFECT_QUIT);
     case COMMAND_RECONNECT:
         app->connection = APP_CONNECTION_CONNECTING;
         app->request = APP_REQUEST_IDLE;
         app->view_dirty = true;
-        if (push_effect(effects, APP_EFFECT_NET_DISCONNECT, NULL, 0) == -1) {
+        if (push_simple_effect(effects, APP_EFFECT_NET_DISCONNECT) == -1) {
             return -1;
         }
-        return push_effect(effects, APP_EFFECT_NET_CONNECT, NULL, 0);
+        return push_simple_effect(effects, APP_EFFECT_NET_CONNECT);
     case COMMAND_DISCONNECT:
-        return push_effect(effects, APP_EFFECT_NET_DISCONNECT, NULL, 0);
+        return push_simple_effect(effects, APP_EFFECT_NET_DISCONNECT);
     case COMMAND_SEND_RAW:
-        if (app->connection != APP_CONNECTION_READY) {
-            set_notification(app, "Not connected");
-            return 0;
-        }
-        if (app->request != APP_REQUEST_IDLE) {
-            set_notification(app, "A request is already pending");
-            return 0;
-        }
-        app->request = APP_REQUEST_SUBMITTING;
-        app->view_dirty = true;
-        return push_effect(
+        return push_request_effect(
+            app,
             effects,
-            APP_EFFECT_NET_SEND,
+            "HTTTP",
             command->argument,
             command->argument_len
         );
+    case COMMAND_SET_NAME:
+        return push_request_effect(
+            app,
+            effects,
+            "SET_PLAYER_NAME",
+            command->argument,
+            command->argument_len
+        );
+    case COMMAND_WHOAMI:
+        return push_request_effect(app, effects, "WHOAMI", NULL, 0);
     case COMMAND_UNSUPPORTED:
-        set_notification(app, "Unsupported by the current echo-only server");
+        set_notification(app, "Unsupported command");
         return 0;
     }
     return -1;
@@ -164,7 +205,7 @@ int app_reduce(AppState* app, const AppEvent* event, AppEffectList* effects) {
     case APP_EVENT_START:
         app->connection = APP_CONNECTION_CONNECTING;
         app->view_dirty = true;
-        return push_effect(effects, APP_EFFECT_NET_CONNECT, NULL, 0);
+        return push_simple_effect(effects, APP_EFFECT_NET_CONNECT);
     case APP_EVENT_COMMAND_SUBMITTED:
         return reduce_command(app, event->data.command, effects);
     case APP_EVENT_NETWORK:

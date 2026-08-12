@@ -157,7 +157,7 @@ int main() {
     DTOR_DEFINE(dtor, 10);
 
     #ifndef TETRISH_TETRISLOGD_NO_DAEMON
-    switch (incantation()) {
+    if (getenv("TETRISH_FOREGROUND") == NULL) switch (incantation()) {
     case 0:
         DTOR_RETURN(dtor, 0);
     case -1:

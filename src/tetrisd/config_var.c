@@ -54,6 +54,7 @@ int config_var_init(struct config_var* cfg_var) {
     static const unsigned int LOGGER_RECONNECT_SECONDS_DEFAULT = 5;
     static const unsigned int LOGGER_CAPACITY_DEFAULT = 512;
     static const unsigned int CLIENT_CAPACITY_DEFAULT = 8;
+    static const unsigned int STATE_PUSH_INTERVAL_MS_DEFAULT = 1000;
     // the nonce response queues two frames back to back, so anything smaller stalls the handshake.
     static const unsigned int CLIENT_CAPACITY_MIN = 2;
 
@@ -141,6 +142,17 @@ int config_var_init(struct config_var* cfg_var) {
         DTOR_ERR_RETURN(errdtor, dtor, -1);
     }
 
+    unsigned int state_push_interval_ms;
+    if (config_get_uint_arg(
+        &config,
+        "state_push_interval_ms",
+        STATE_PUSH_INTERVAL_MS_DEFAULT,
+        10,
+        &state_push_interval_ms
+    ) == -1) {
+        DTOR_ERR_RETURN(errdtor, dtor, -1);
+    }
+
     char* log_ipc = config_get_path(&config, "log_ipc", project_dir);
     if (log_ipc == NULL) {
         fputs("log_ipc invalid\n", stderr);
@@ -160,6 +172,7 @@ int config_var_init(struct config_var* cfg_var) {
         .logger_reconnect_seconds = logger_reconnect_seconds,
         .logger_capacity = logger_capacity,
         .client_capacity = client_capacity,
+        .state_push_interval_ms = state_push_interval_ms,
     };
 
     *cfg_var = new_cfg;

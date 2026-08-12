@@ -1,0 +1,19 @@
+listen_port=4321
+address=127.0.0.1
+
+# Paths are relative to PROJECT_DIR.
+cert_path=var/dev-auth/server.crt
+key_path=var/dev-auth/server.key
+ca_path=var/dev-auth/ca.crt
+
+log_ipc=var/tetrislogd.sock
+log_path=var/tetrish.log
+logd_max_clients=64
+
+max_fds=1024
+max_events=64
+max_rooms=128
+client_capacity=8
+logger_reconnect_seconds=5
+logger_capacity=512
+state_push_interval_ms=1000

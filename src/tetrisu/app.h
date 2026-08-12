@@ -61,6 +61,9 @@ typedef enum {
 
 typedef struct {
     AppEffectType type;
+    const char* method;
+    const char* path;
+    const char* content_type;
     OwnedBytes payload;
 } AppEffect;
 
@@ -117,7 +120,7 @@ void app_effect_list_free(AppEffectList* effects);
 
     @post only @p app and @p effects may change
     @post @p event and all referenced payloads remain owned by their caller
-    @post emitted effects own their payloads
+    @post emitted effects own their payloads; request metadata borrows string literals
 
     @return `0` on success, `-1` if an effect/payload cannot be allocated
 */

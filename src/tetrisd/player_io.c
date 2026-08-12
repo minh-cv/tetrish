@@ -162,6 +162,15 @@ void PlayerIo_close(PlayerIo* data, const SparseSet_bool* close_fds) {
     }
 }
 
+bool PlayerIo_output_idle(const PlayerIo* data, size_t fd) {
+    const PlayerIoEntry* entry = SparseSet_PlayerIoEntry_get(&data->entries, fd);
+    const WriterFrameQueue* queue = SparseSet_WriterFrameQueue_value_at(
+        &data->write_qs,
+        fd
+    );
+    return entry->writer.state == WRITER_IDLE && WriterFrameQueue_empty(queue);
+}
+
 void PlayerIo_read(PlayerIo* data, const Vec_Fd* m_players_reading, SparseSet_ReaderFrameQueue* m_read_qs, SparseSet_bool* err_fds) {
     for (size_t i = 0; i < Vec_Fd_size(m_players_reading); i++) {
         const size_t fd = (size_t)*Vec_Fd_at(m_players_reading, i);

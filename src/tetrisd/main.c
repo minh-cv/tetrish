@@ -10,7 +10,7 @@
 
 int main(void) {
     #ifndef TETRISH_TETRISD_NO_DAEMON
-    switch (incantation()) {
+    if (getenv("TETRISH_FOREGROUND") == NULL) switch (incantation()) {
         case 0:
         return 0;
         case -1:

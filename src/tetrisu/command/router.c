@@ -48,8 +48,16 @@ CommandRouteResult command_route(const CommandArgv* argv, ParsedCommand* out) {
         out->type = COMMAND_RECONNECT;
     } else if (strcmp(name, "disconnect") == 0) {
         out->type = COMMAND_DISCONNECT;
-    } else if (strcmp(name, "set-name") == 0 || strcmp(name, "whoami") == 0) {
-        out->type = COMMAND_UNSUPPORTED;
+    } else if (strcmp(name, "set-name") == 0) {
+        if (argv->argc < 2) {
+            return COMMAND_ROUTE_MISSING_ARGUMENT;
+        }
+        out->type = COMMAND_SET_NAME;
+        if (join_arguments(argv, 1, out) == -1) {
+            return COMMAND_ROUTE_NOMEM;
+        }
+    } else if (strcmp(name, "whoami") == 0) {
+        out->type = COMMAND_WHOAMI;
     } else if (strcmp(name, "htttp") == 0) {
         if (argv->argc < 2) {
             return COMMAND_ROUTE_MISSING_ARGUMENT;

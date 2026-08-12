@@ -100,6 +100,16 @@ void PlayerIo_close(
 );
 
 /*!
+    @brief report whether a player has no queued or partially written frame
+
+    @pre @p data is initialized and @p fd is present in @c entries
+    @post @p data is unchanged
+
+    @return true iff both the writer state and its persistent queue are empty
+*/
+bool PlayerIo_output_idle(const PlayerIo* data, size_t fd);
+
+/*!
     @brief Performs one read pass over every fd in @p m_players_reading ,  
            appending newly read frames in its slot in @p m_read_qs and
            marking fds that should be closed in @p err_fds on socket error.

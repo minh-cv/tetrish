@@ -2,6 +2,7 @@
 #define TETRISH_TETRISU_NET_CLIENT_H
 
 #include "net/event.h"
+#include "net/htttp_codec.h"
 #include "net/message.h"
 #include "net/socket_transport.h"
 #include "net/tetrissh_channel.h"
@@ -93,6 +94,25 @@ int net_client_send(
     NetClient* client,
     const unsigned char* payload,
     size_t length,
+    uint64_t now_ms,
+    NetEventList* events
+);
+
+/*!
+    @brief encode and queue one typed HTTTP request
+
+    @pre @p client is in `NET_CLIENT_READY_IDLE`
+    @pre fields borrowed by @p request remain valid for this call
+    @pre @p events is initialized and empty
+    @post on acceptance, serialized plaintext is retained until reply/echo and
+          `SEND_ACCEPTED` is appended
+    @post @p request and its body remain owned by the caller
+
+    @return `0` if represented by events, `-1` only if an event cannot append
+*/
+int net_client_send_request(
+    NetClient* client,
+    const ClientRequest* request,
     uint64_t now_ms,
     NetEventList* events
 );

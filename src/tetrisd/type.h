@@ -48,6 +48,7 @@ typedef struct {
 
 typedef enum {
     AUTH_FRAME_OK,
+    AUTH_FRAME_STATE_PUSH,
     AUTH_FRAME_DECRYPT_FAILURE,
 } AuthFrameStatus;
 

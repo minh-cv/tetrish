@@ -35,6 +35,14 @@ static void test_command_parser_and_router(void) {
         sizeof(unterminated) - 1,
         &argv
     ) == COMMAND_PARSE_UNTERMINATED_QUOTE);
+
+    static const char set_name[] = "set-name Reference Player";
+    assert(command_argv_parse(set_name, sizeof(set_name) - 1, &argv) == COMMAND_PARSE_OK);
+    assert(command_route(&argv, &command) == COMMAND_ROUTE_OK);
+    assert(command.type == COMMAND_SET_NAME);
+    assert(strcmp(command.argument, "Reference Player") == 0);
+    parsed_command_free(&command);
+    command_argv_free(&argv);
 }
 
 static void test_codec_round_trip(void) {
@@ -125,10 +133,37 @@ static void test_state_push_preserves_pending_request(void) {
     app_free(&app);
 }
 
+static void test_set_name_reduces_to_typed_request(void) {
+    AppState app;
+    app_init(&app);
+    app.connection = APP_CONNECTION_READY;
+    static char name[] = "Reference";
+    const ParsedCommand command = {
+        .type = COMMAND_SET_NAME,
+        .argument = name,
+        .argument_len = sizeof(name) - 1,
+    };
+    const AppEvent event = {
+        .type = APP_EVENT_COMMAND_SUBMITTED,
+        .data.command = &command,
+    };
+    AppEffectList effects;
+    app_effect_list_init(&effects);
+    assert(app_reduce(&app, &event, &effects) == 0);
+    assert(effects.count == 1);
+    assert(effects.items[0].type == APP_EFFECT_NET_SEND);
+    assert(strcmp(effects.items[0].method, "SET_PLAYER_NAME") == 0);
+    assert(effects.items[0].payload.len == sizeof(name) - 1);
+    assert(app.request == APP_REQUEST_SUBMITTING);
+    app_effect_list_free(&effects);
+    app_free(&app);
+}
+
 int main(void) {
     test_command_parser_and_router();
     test_codec_round_trip();
     test_inbound_policy();
     test_state_push_preserves_pending_request();
+    test_set_name_reduces_to_typed_request();
     return 0;
 }

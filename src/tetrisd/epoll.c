@@ -91,7 +91,13 @@ void Epoll_close(EpollData* data, const SparseSet_bool* m_close_fds) {
     }
 }
 
-int Epoll_poll(EpollData* data, Vec_Fd* player_read, Vec_Fd* player_write, bool* acceptor_readable) {
+int Epoll_poll(
+    EpollData* data,
+    Vec_Fd* player_read,
+    Vec_Fd* player_write,
+    bool* acceptor_readable,
+    bool* state_timer_readable
+) {
     const int n = epoll_wait(data->epoll_fd, data->events.ptr, (int)data->events.length, -1);
     if (n == -1) {
         if (errno != EINTR) {
@@ -109,6 +115,11 @@ int Epoll_poll(EpollData* data, Vec_Fd* player_read, Vec_Fd* player_write, bool*
         case EPOLL_ENTRY_ACCEPTOR:
             if (ev->events & EPOLLIN) {
                 *acceptor_readable = true;
+            }
+            break;
+        case EPOLL_ENTRY_ROOM_TIMERFD:
+            if (ev->events & EPOLLIN) {
+                *state_timer_readable = true;
             }
             break;
         case EPOLL_ENTRY_PLAYER:

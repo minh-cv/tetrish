@@ -97,6 +97,17 @@ void AuthData_close(
 );
 
 /*!
+    @brief report whether @p fd completed tetrissh authentication
+
+    @pre @p data is initialized
+    @pre @p fd is smaller than the configured fd-table capacity
+    @post @p data is unchanged
+
+    @return true iff @p fd has an entry whose state is `AUTH_DONE`
+*/
+bool AuthData_is_authenticated(const AuthData* data, size_t fd);
+
+/*!
     @brief Advance decryption or handshaking for every fd in @p read_qs ,  
            appending new handshaking frames in its slot in @p handshake_out or decrypted frames in its slot in @p m_decrypted and
            marking fds that should be closed in @p err_fds .
@@ -129,8 +140,10 @@ void AuthData_handshake_or_decrypt(
 
     @pre  No entry of @p m_auth_qs is already marked in @p err_fds 
 
-    @post For each failed fd in @p m_auth_qs , it is newly
-          marked in @p err_fds . Pre-existing entries of @p err_fds are preserved.
+    @post For each failed response fd in @p m_auth_qs , it is newly marked in
+          @p err_fds. A STATE push that encounters a full writer queue is
+          dropped instead, preserving the connection and any queued response.
+          Pre-existing entries of @p err_fds are preserved.
 
     @note If the precondition is violated, the overlapping entries are
           currently skipped. This behavior is not part of the contract

@@ -14,7 +14,8 @@ static void auth_queue_drain(AuthFrameQueue* q) {
     const size_t count = AuthFrameQueue_size(q);
     for (size_t i = 0; i < count; i++) {
         const AuthFrame* frame = AuthFrameQueue_front(q);
-        if (frame->status == AUTH_FRAME_OK && frame->frame.status == READER_FRAME_OK) {
+        if (frame->status != AUTH_FRAME_DECRYPT_FAILURE &&
+            frame->frame.status == READER_FRAME_OK) {
             free(frame->frame.content.ptr);
         }
         AuthFrameQueue_pop_front(q);
@@ -154,6 +155,11 @@ void AuthData_close(AuthData* data, const SparseSet_bool* close_fds) {
     }
 }
 
+bool AuthData_is_authenticated(const AuthData* data, size_t fd) {
+    return SparseSet_AuthEntry_contains(&data->entries, fd) &&
+        SparseSet_AuthEntry_get(&data->entries, fd)->auth_state == AUTH_DONE;
+}
+
 static int handshake_or_decrypt_frame(AuthData* data, AuthEntry* entry, const ReaderFrame* frame, size_t fd,
                                       SparseSet_AuthFrameQueue* m_decrypted_out,
                                       SparseSet_WriterFrameQueue* handshake_out) {
@@ -286,7 +292,6 @@ void AuthData_encrypt(AuthData* data, const SparseSet_AuthFrameQueue* m_auth_qs,
     for (size_t i = 0; i < SparseSet_AuthFrameQueue_size(m_auth_qs); i++) {
         const size_t fd = SparseSet_AuthFrameQueue_key_at_idx(m_auth_qs, i);
         if (SparseSet_bool_contains(err_fds, fd)) {
-            assert(false && "m_auth_qs fd must not be in err_fds");
             continue;
         }
         AuthFrameQueue* q = SparseSet_AuthFrameQueue_at_idx(m_auth_qs, i);
@@ -296,7 +301,9 @@ void AuthData_encrypt(AuthData* data, const SparseSet_AuthFrameQueue* m_auth_qs,
         for (size_t j = 0; j < frame_count; j++) {
             const AuthFrame* frame = AuthFrameQueue_at(q, j);
 
-            if (frame->status != AUTH_FRAME_OK || frame->frame.status != READER_FRAME_OK) {
+            if ((frame->status != AUTH_FRAME_OK &&
+                 frame->status != AUTH_FRAME_STATE_PUSH) ||
+                frame->frame.status != READER_FRAME_OK) {
                 *SparseSet_bool_activate(err_fds, fd) = true;
                 break;
             }
@@ -317,12 +324,14 @@ void AuthData_encrypt(AuthData* data, const SparseSet_AuthFrameQueue* m_auth_qs,
             WriterFrameQueue* wq = SparseSet_WriterFrameQueue_activate(out, fd);
             const WriterFrame cipher_frame = { cipher, cipher_len };
             if (WriterFrameQueue_push_back(wq, &cipher_frame) == -1) {
-                // Dropped, not an error: the client's timeout will retransmit the request.
-                // TODO: proper backpressure belongs in the application layer, which would
-                // have to see write-queue occupancy to stop producing responses; once it
-                // does, this becomes an assert that the queue is never full here.
-                LOGGER_LOG(LOG_WARN, "auth", "write queue full, dropping response for fd=%zu", fd);
                 free(cipher);
+                if (frame->status == AUTH_FRAME_STATE_PUSH) {
+                    LOGGER_LOG(LOG_DEBUG, "auth", "dropping stale STATE for slow fd=%zu", fd);
+                    continue;
+                }
+                LOGGER_LOG(LOG_WARN, "auth", "write queue full, closing fd=%zu", fd);
+                *SparseSet_bool_activate(err_fds, fd) = true;
+                break;
             }
         }
     }
