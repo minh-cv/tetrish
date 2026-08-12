@@ -1,0 +1,6 @@
+[submodule "external/corestack"]
+	path = external/corestack
+	url = https://github.com/minh-cv/corestack.git
+[submodule "external/cjson"]
+	path = external/cjson
+	url = https://github.com/DaveGamble/cJSON.git

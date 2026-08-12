@@ -1,24 +1,59 @@
 cmake_minimum_required(VERSION 3.10)
 project(tetrish LANGUAGES C)
 
+option(TETRISH_DEV_MODE "Enable dev-mode macros" OFF)
+option(TETRISH_TETRISD_NO_DAEMON "Disable daemonization of tetrisd" ${TETRISH_DEV_MODE})
+option(TETRISH_TETRISLOGD_NO_DAEMON "Disable daemonization of tetrislogd" ${TETRISH_DEV_MODE})
+
 add_compile_options(-g -Wall -Wextra -Wpedantic -Wconversion -Wno-strict-prototypes)
 
-add_library(libhtttp SHARED src/libhtttp/htttp.c)
-target_include_directories(libhtttp PRIVATE include)
+find_package(Threads REQUIRED)
 
-add_library(libtetrissh SHARED src/libtetrissh/tetrissh.c)
-target_include_directories(libtetrissh PRIVATE include)
+set(BUILD_SHARED_LIBS OFF CACHE BOOL "" FORCE)
+add_subdirectory(external/corestack)
 
-add_library(libtetrisbrain SHARED src/libtetrisbrain/tetrisbrain.c)
-target_include_directories(libtetrisbrain PRIVATE include)
+# cJSON's CMakeLists has no target_include_directories and defaults to a shared
+# lib plus its own test/install rules, so configure it and patch the interface.
+set(ENABLE_CJSON_TEST OFF CACHE BOOL "" FORCE)
+set(CJSON_OVERRIDE_BUILD_SHARED_LIBS ON CACHE BOOL "" FORCE)
+set(CJSON_BUILD_SHARED_LIBS OFF CACHE BOOL "" FORCE)
+set(ENABLE_TARGET_EXPORT OFF CACHE BOOL "" FORCE)
+set(ENABLE_CUSTOM_COMPILER_FLAGS OFF CACHE BOOL "" FORCE)
+add_subdirectory(external/cjson EXCLUDE_FROM_ALL)
+target_include_directories(cjson INTERFACE ${CMAKE_CURRENT_SOURCE_DIR}/external/cjson)
 
-add_library(common src/common/common.c)
-target_include_directories(common PRIVATE include)
+add_library(tetrisbrain
+    src/libtetrisbrain/control.c
+    src/libtetrisbrain/state.c
+    src/libtetrisbrain/static.c)
+target_include_directories(tetrisbrain PRIVATE include)
+target_compile_options(tetrisbrain PRIVATE -Wno-missing-braces)
+
+add_library(cmdline src/cmdline/cmdline.c)
+target_include_directories(cmdline PUBLIC include external/corestack/include)
 
 add_executable(tetrisctl src/tetrisctl/main.c)
-add_executable(tetrisd src/tetrisd/main.c)
-add_executable(tetrislogd src/tetrislogd/main.c)
-add_executable(tetrisu src/tetrisu/main.c)
+add_executable(tetrisd src/tetrisd/main.c src/tetrisd/server.c src/tetrisd/config_var.c src/tetrisd/sig.c src/tetrisd/socket.c src/tetrisd/acceptor.c src/tetrisd/epoll.c src/tetrisd/player_io.c src/tetrisd/auth.c)
+target_include_directories(tetrisd PRIVATE src/tetrisd)
+target_link_libraries(tetrisd PRIVATE daemon logger network common tetrissh config)
+target_compile_definitions(tetrisd PRIVATE
+    $<$<BOOL:${TETRISH_TETRISD_NO_DAEMON}>:TETRISH_TETRISD_NO_DAEMON>
+)
+target_include_directories(tetrisd PRIVATE include)
+
+add_executable(tetrislogd src/tetrislogd/main.c
+    src/tetrislogd/config_var.c)
+target_include_directories(tetrislogd PRIVATE include src/tetrislogd)
+target_link_libraries(tetrislogd PRIVATE config tetrissh daemon Threads::Threads)
+target_compile_definitions(tetrislogd PRIVATE
+    $<$<BOOL:${TETRISH_TETRISLOGD_NO_DAEMON}>:TETRISH_TETRISLOGD_NO_DAEMON>
+)
+
+add_executable(tetrisu src/tetrisu/main.c
+    src/tetrisu/config_var.c)
+target_include_directories(tetrisu PRIVATE src/tetrisu)
+target_link_libraries(tetrisu PRIVATE cjson htttp common tetrissh config)
+target_include_directories(tetrisu PRIVATE include)
 
 add_library(perms src/tetrish/libs/perms.c)
 target_include_directories(perms PUBLIC src/tetrish)
@@ -46,14 +81,9 @@ target_include_directories(sys PRIVATE src/tetrish)
 
 add_executable(directive src/tetrish/system_programs/directive.c)
 
-add_library(config src/config/config.c)
-target_include_directories(config PRIVATE include)
-
 install(
     TARGETS
-        libhtttp
-        libtetrissh
-        libtetrisbrain
+        tetrisbrain
         tetrisctl
         tetrisd
         tetrislogd
