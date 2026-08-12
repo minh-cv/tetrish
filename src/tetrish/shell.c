@@ -5,6 +5,7 @@
 #include "libs/shell.h"
 #include "cmdline.h"
 #include <assert.h>
+#include <errno.h>
 #include <stddef.h>
 #include <stdint.h>
 #include <stdio.h>
@@ -13,8 +14,48 @@
 #include <time.h>
 #include <unistd.h>
 
+static int shell_cd(char** args);
+static int shell_help(char** args);
+static int shell_exit(char** args);
+static int shell_usage(char** args);
+static int list_env(char** args);
+static int unset_env_var(char** args);
+
+typedef struct {
+    const char* name;
+    int (*func)(char** args);
+    const char* usage;
+} BuiltinCommand;
+
+static const BuiltinCommand builtin_commands[] = {
+    {"cd", shell_cd,
+     "cd [<directory>]\nChange the current working directory of the shell. Defaults to $HOME.\n"},
+    {"help", shell_help,
+     "help\nList all builtin commands.\n"},
+    {"exit", shell_exit,
+     "exit [<status>]\nTerminate the shell, exiting with <status> if given.\n"},
+    {"usage", shell_usage,
+     "usage <cmd>\nPrint how to use a command.\n"},
+    {"env", list_env,
+     "env\nList all environment variables.\n"},
+    {"setenv", set_env_var,
+     "setenv <env-name>=<value>\nSet an environment variable.\n"},
+    {"unsetenv", unset_env_var,
+     "unsetenv <env-name>\nUnset an environment variable.\n"},
+};
+
+static const size_t builtin_commands_count =
+    sizeof builtin_commands / sizeof *builtin_commands;
+
 static int shell_cd(char **args) {
-    char* path = args[1] == NULL ? getenv("HOME") : args[1];
+    const char* path = args[1];
+    if (path == NULL) {
+        path = getenv("HOME");
+        if (path == NULL) {
+            fprintf(stderr, "cd: HOME not set\n");
+            return 1;
+        }
+    }
     if (chdir(path) != 0) {
         perror("cd");
         return 1;
@@ -24,23 +65,28 @@ static int shell_cd(char **args) {
 
 static int shell_help(char **args) {
     (void)args;
-    printf(
-"The following commands are implemented within the shell:\n\
-    cd\n\
-    help\n\
-    exit\n\
-    usage\n\
-    env\n\
-    setenv\n\
-    unsetenv\n"
-    );
-
+    printf("The following commands are implemented within the shell:\n");
+    for (size_t i = 0; i < builtin_commands_count; i++) {
+        printf("    %s\n", builtin_commands[i].name);
+    }
     return 0;
 }
 
 static int shell_exit(char **args) {
-    (void)args;
-    exit(0);
+    int status = 0;
+    if (args[1] != NULL) {
+        char* end;
+        errno = 0;
+        long value = strtol(args[1], &end, 10);
+        if (*args[1] == '\0' || *end != '\0' || errno == ERANGE ||
+            value < 0 || value > 255) {
+            fprintf(stderr, "exit: numeric argument required\n");
+            status = 2;
+        } else {
+            status = (int)value;
+        }
+    }
+    exit(status);
 }
 
 static int shell_usage(char **args) {
@@ -49,33 +95,12 @@ static int shell_usage(char **args) {
         return 1;
     }
 
-    size_t cmd_idx = get_builtin_command_index(args[1]);
-    switch (cmd_idx) {
-    case 0: // cd
-        printf("cd [<directory>]\nChange the current working directory of the shell. Defaults to $HOME.\n");
-        break;
-    case 1: // help
-        printf("help\nList all builtin commands.\n");
-        break;
-    case 2: // exit
-        printf("exit\nTerminate the shell.\n");
-        break;
-    case 3: // usage
-        printf("usage <cmd>\nPrint how to use a command.\n");
-        break;
-    case 4: // env
-        printf("env\nList all environment variables.\n");
-        break;
-    case 5: // setenv
-        printf("setenv <env-name>=<value>\nSet an environment variable.\n");
-        break;
-    case 6: // unsetenv
-        printf("unsetenv <env-name>\nUnset an environment variable.\n");
-        break;
-    default:
+    size_t index = get_builtin_command_index(args[1]);
+    if (index == SIZE_MAX) {
         fprintf(stderr, "Non-builtin command not supported.\n");
         return 2;
     }
+    fputs(builtin_commands[index].usage, stdout);
     return 0;
 }
 
@@ -128,39 +153,18 @@ static int unset_env_var(char **args) {
     return retval;
 }
 
-static const char *builtin_commands[] = {
-    "cd",   // Changes the current directory of the shell to the specified path.
-            // If no path is given, it defaults to the user's home directory.
-    "help", //  List all builtin commands in the shell
-    "exit", // Exits the shell
-    "usage",  // Provides a brief usage guide for the shell and its built-in
-              // command
-    "env",    // Lists all the environment variables currently set in the shell
-    "setenv", // Sets or modifies an environment variable for this shell session
-    "unsetenv" // Removes an environment variable from the shell
-};
-
-static int (*builtin_command_func[])(char **) = {
-    &shell_cd,     // builtin_command_func[0]: cd
-    &shell_help,   // builtin_command_func[1]: help
-    &shell_exit,   // builtin_command_func[2]: exit
-    &shell_usage,  // builtin_command_func[3]: usage
-    &list_env,     // builtin_command_func[4]: env
-    &set_env_var,  // builtin_command_func[5]: setenv
-    &unset_env_var // builtin_command_func[6]: unsetenv
-};
-
 size_t get_builtin_command_index(const char *cmd) {
-    for (size_t i = 0; i < sizeof(builtin_commands)/sizeof(const char*); i++) {
-        if (strcmp(cmd, builtin_commands[i]) == 0) {
+    for (size_t i = 0; i < builtin_commands_count; i++) {
+        if (strcmp(cmd, builtin_commands[i].name) == 0) {
             return i;
         }
     }
     return SIZE_MAX;
 }
 
-void execute_builtin_command(char **cmd, size_t index) {
-    builtin_command_func[index](cmd);
+int execute_builtin_command(char **cmd, size_t index) {
+    assert(index < builtin_commands_count);
+    return builtin_commands[index].func(cmd);
 }
 
 ReadCommandResult read_command_from_file(FILE* file, char*** out_argv, size_t* out_argc) {

@@ -20,8 +20,9 @@ static void sigint_handler(int sig) {
     kill((pid_t)child_pid, SIGINT);
 }
 
-void body(FILE* input) {
+int body(FILE* input) {
     int child_status;
+    int last_status = 0;
     pid_t pid;
 
     while (true) {
@@ -35,6 +36,7 @@ void body(FILE* input) {
         }
         if (read_result == READ_COMMAND_INVALID) {
             fprintf(stderr, "tetrish: cannot parse command line\n");
+            last_status = 2;
             continue;
         }
         if (argc == 0) {
@@ -44,7 +46,7 @@ void body(FILE* input) {
 
         if (input != stdin) {
             if (strncmp(cmd[0], "PATH=", 5) == 0) {
-                set_env_var((char*[]){NULL, cmd[0], NULL});
+                last_status = set_env_var((char*[]){NULL, cmd[0], NULL});
                 free_command(cmd);
                 continue;
             }
@@ -52,7 +54,7 @@ void body(FILE* input) {
 
         size_t builtin_idx = get_builtin_command_index(cmd[0]);
         if (builtin_idx != SIZE_MAX) {
-            execute_builtin_command(cmd, builtin_idx);
+            last_status = execute_builtin_command(cmd, builtin_idx);
             free_command(cmd);
             continue;
         }
@@ -74,6 +76,7 @@ void body(FILE* input) {
         else if (pid < 0) {
             sigprocmask(SIG_SETMASK, &prev_mask, NULL);
             fprintf(stderr, "Cannot spawn task\n");
+            last_status = 1;
         }
         else {
             child_pid = pid;
@@ -86,12 +89,21 @@ void body(FILE* input) {
             } while (rc < 0 && errno == EINTR);
 
             has_child_pid = 0;
-            if (rc > 0 && WIFSTOPPED(child_status)) {
+            if (rc < 0) {
+                last_status = 1;
+            } else if (WIFSTOPPED(child_status)) {
                 fprintf(stderr, "tetrish: [%d] stopped\n", (int)pid);
+                last_status = 128 + WSTOPSIG(child_status);
+            } else if (WIFSIGNALED(child_status)) {
+                last_status = 128 + WTERMSIG(child_status);
+            } else {
+                last_status = WEXITSTATUS(child_status);
             }
         }
         free_command(cmd);
     }
+
+    return last_status;
 }
 
 int main(void) {
@@ -110,5 +122,5 @@ int main(void) {
         body(shellrc);
         fclose(shellrc);
     }
-    body(stdin);
+    return body(stdin);
 }

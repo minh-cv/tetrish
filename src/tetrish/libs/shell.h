@@ -13,7 +13,15 @@ typedef enum {
 void type_prompt();
 void clear();
 size_t get_builtin_command_index(const char* cmd);
-void execute_builtin_command(char** cmd, size_t index);
+
+/*!
+    @brief Run builtin @p index with @p cmd as its args.
+
+    @pre @p index is a value returned by `get_builtin_command_index` other
+    than SIZE_MAX.
+    @return the builtin's exit status.
+*/
+int execute_builtin_command(char** cmd, size_t index);
 
 /*!
     @brief Read one line from @p file and split it with `cmdline_parse`.
