@@ -58,37 +58,30 @@ void AppData_close(AppData* data, const SparseSet_bool* close_fds) {
     }
 }
 
-void AppData_respond(AppData* data, const SparseSet_HtttpParsedMessageQueue* m_parsed_qs,
-                     SparseSet_HtttpOutboundMessageQueue* m_response_qs,
-                     SparseSet_bool* err_fds) {
-    for (size_t i = 0; i < SparseSet_HtttpParsedMessageQueue_size(m_parsed_qs); i++) {
-        const size_t fd = SparseSet_HtttpParsedMessageQueue_key_at_idx(m_parsed_qs, i);
-        if (SparseSet_bool_contains(err_fds, fd)) {
-            assert(false && "m_parsed_qs fd must not be in err_fds");
-            continue;
+static int respond_one_request(AppData* data, Fd fd, const HtttpRequest* parsed, HtttpOutboundMessage* outbound) {
+    (void)data;
+    (void)fd;
+    outbound->message.is_request = false;
+    if (htttp_make_default_response(HTTTP_STATUS_OK, (const char*)parsed->body, parsed->body_len, false, &outbound->message.response, &outbound->ownership) == -1) {
+        return -1;
+    }
+    return 0;
         }
-        if (!SparseSet_AppEntry_contains(&data->entries, fd)) {
-            assert(false && "m_parsed_qs fd must have been accepted");
-            continue;
-        }
-        HtttpParsedMessageQueue* q = SparseSet_HtttpParsedMessageQueue_at_idx(m_parsed_qs, i);
 
-        bool failed = false;
-        const size_t count = HtttpParsedMessageQueue_size(q);
-        HtttpOutboundMessageQueue* out = SparseSet_HtttpOutboundMessageQueue_activate(m_response_qs, fd);
-
-        for (size_t j = 0; j < count; j++) {
-            const HtttpParsedMessage* parsed = HtttpParsedMessageQueue_at(q, j);
-
+static int respond_one_frame(AppData* data, Fd fd, const HtttpParsedMessage* parsed, HtttpOutboundMessage* outbound, bool* is_written) {
             HtttpStatus status = HTTTP_STATUS_BAD_REQUEST;
             const char* body = NULL;
             size_t body_len = 0;
             switch (parsed->status) {
             case FRAME_OK:
                 if (parsed->message.is_request) {
-                    status = HTTTP_STATUS_OK;
-                    body = (const char*)parsed->message.request.body;
-                    body_len = parsed->message.request.body_len;
+            int out = respond_one_request(data, fd, &parsed->message.request, outbound);
+            *is_written = out == 0;
+            return out;
+        }
+        else {
+            *is_written = false;
+            return 0;
                 }
                 break;
             case FRAME_DECRYPT_ERROR:
@@ -108,18 +101,55 @@ void AppData_respond(AppData* data, const SparseSet_HtttpParsedMessageQueue* m_p
                 break;
             }
 
-            HtttpOutboundMessage outbound;
-            outbound.message.is_request = false;
-            if (htttp_make_default_response(status, body, body_len, false,
-                                            &outbound.message.response, &outbound.ownership) == -1) {
+    outbound->message.is_request = false;
+    if (htttp_make_default_response(status, body, body_len, false, &outbound->message.response, &outbound->ownership) == -1) {
+        *is_written = false;
+        return -1;
+    }
+    *is_written = true;
+    return 0;
+}
+
+void AppData_respond(AppData* data, const SparseSet_HtttpParsedMessageQueue* m_parsed_qs,
+                     SparseSet_HtttpOutboundMessageQueue* m_response_qs,
+                     SparseSet_bool* err_fds) {
+    for (size_t i = 0; i < SparseSet_HtttpParsedMessageQueue_size(m_parsed_qs); i++) {
+        const size_t fd = SparseSet_HtttpParsedMessageQueue_key_at_idx(m_parsed_qs, i);
+        if (SparseSet_bool_contains(err_fds, fd)) {
+            assert(false && "m_parsed_qs fd must not be in err_fds");
+            continue;
+        }
+        if (!SparseSet_Player_contains(&data->players, fd)) {
+            assert(false && "m_parsed_qs fd must have been accepted");
+            continue;
+        }
+        HtttpParsedMessageQueue* q = SparseSet_HtttpParsedMessageQueue_at_idx(m_parsed_qs, i);
+
+        bool failed = false;
+        const size_t count = HtttpParsedMessageQueue_size(q);
+        HtttpOutboundMessageQueue* out = SparseSet_HtttpOutboundMessageQueue_activate(m_response_qs, fd);
+
+        for (size_t j = 0; j < count; j++) {
+            const HtttpParsedMessage* parsed = HtttpParsedMessageQueue_at(q, j);
+
+            HtttpOutboundMessage response = {
+                .message.is_request = false,
+            };
+            bool is_written;
+
+            if (respond_one_frame(data, (Fd)fd, parsed, &response, &is_written) == -1) {
                 failed = true;
                 break;
             }
 
-            const int err = HtttpOutboundMessageQueue_push_back(out, &outbound);
+            if (!is_written) {
+                continue;
+            }
+
+            const int err = HtttpOutboundMessageQueue_push_back(out, &response);
             assert(err != -1 && "parsed_qs and response_qs share cfg.client_capacity");
             if (err == -1) {
-                htttp_message_free(&outbound.message, &outbound.ownership);
+                htttp_message_free(&response.message, &response.ownership);
                 failed = true;
                 break;
             }
