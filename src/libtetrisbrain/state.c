@@ -92,9 +92,9 @@ bool move_down(Tetromino* t, const Board* board) {
 }
 
 bool move_left(Tetromino* t, const Board* board, MovementState* ms) {
-    ms->is_just_rotated = false;
     t->col_offset--;
     if (!is_colliding(t, board)) {
+        ms->is_just_rotated = false;
         return true;
     }
     t->col_offset++;
@@ -102,9 +102,9 @@ bool move_left(Tetromino* t, const Board* board, MovementState* ms) {
 }
 
 bool move_right(Tetromino* t, const Board* board, MovementState* ms) {
-    ms->is_just_rotated = false;
     t->col_offset++;
     if (!is_colliding(t, board)) {
+        ms->is_just_rotated = false;
         return true;
     }
     t->col_offset--;
