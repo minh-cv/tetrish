@@ -319,6 +319,7 @@ bool is_outside_playfield_area(Tetromino* t) {
         }
     }
     assert(false && "empty piece");
+    return false;
 }
 
 bool push_tetromino(Tetromino* t, const Board* board) {
