@@ -82,6 +82,7 @@ target_include_directories(sys PRIVATE src/tetrish)
 
 add_executable(dspawn src/tetrish/system_programs/dspawn.c)
 target_include_directories(dspawn PRIVATE src/tetrish)
+target_link_libraries(dspawn PRIVATE daemon)
 
 add_executable(dcheck src/tetrish/system_programs/dcheck.c)
 target_include_directories(dcheck PRIVATE src/tetrish)

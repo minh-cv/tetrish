@@ -1,62 +1,8 @@
-#include <fcntl.h>
+#include "daemon.h"
 #include <linux/limits.h>
-#include <signal.h>
-#include <stdarg.h>
 #include <stdio.h>
 #include <stdlib.h>
-#include <sys/stat.h>
 #include <unistd.h>
-
-typedef enum {
-    DAEMONIZE_CHILD,  // caller is the daemon and should carry on
-    DAEMONIZE_PARENT, // caller is an intermediate process and should exit
-    DAEMONIZE_ERROR,
-} DaemonizeResult;
-
-static DaemonizeResult incantation() {
-    int pid = fork();
-    if (pid < 0) {
-        perror("dspawn: fork");
-        return DAEMONIZE_ERROR;
-    }
-    if (pid > 0) {
-        return DAEMONIZE_PARENT;
-    }
-
-    if (setsid() == -1) {
-        perror("dspawn: setsid");
-        return DAEMONIZE_ERROR;
-    }
-    signal(SIGCHLD, SIG_IGN);
-    signal(SIGHUP, SIG_IGN);
-
-    int daemon_pid = fork();
-    if (daemon_pid < 0) {
-        perror("dspawn: fork");
-        return DAEMONIZE_ERROR;
-    }
-    if (daemon_pid > 0) {
-        return DAEMONIZE_PARENT;
-    }
-
-    umask(0);
-    if (chdir("/") == -1) {
-        perror("dspawn: chdir");
-        return DAEMONIZE_ERROR;
-    }
-
-    for (int x = (int)sysconf(_SC_OPEN_MAX); x >= 0; x--) {
-        close(x);
-    }
-
-    /*
-    * Attach file descriptors 0, 1, and 2 to /dev/null. */
-    if (open("/dev/null", O_RDWR) == -1 || dup(0) == -1 || dup(0) == -1) {
-        return DAEMONIZE_ERROR;
-    }
-
-    return DAEMONIZE_CHILD;
-}
 
 static int daemon_work(const char* log_out) {
     FILE* logger = fopen(log_out, "a");
@@ -88,12 +34,15 @@ int main() {
     }
 
     switch (incantation()) {
-    case DAEMONIZE_PARENT:
-        _exit(0);
-    case DAEMONIZE_ERROR:
-        return 1;
-    case DAEMONIZE_CHILD:
+    case 0:
+        return 0;
+    case -1:
+        perror("incantation");
+        return EXIT_FAILURE;
+    case 1:
         break;
+    default:
+        return EXIT_FAILURE;
     }
 
     return daemon_work(log_out);
