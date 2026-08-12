@@ -197,17 +197,12 @@ void free_command(char** argv) {
     free(argv);
 }
 
-// Function to display the shell prompt
 void type_prompt() {
-  fflush(stdout); // Flush the output buffer
-  printf("$$ ");  // Print the shell prompt
+  printf("$$ ");
+  fflush(stdout);
 }
 
 void clear() {
-#ifdef _WIN32
-    system("cls"); // Windows command to clear screen
-#else
-    system("clear"); // UNIX/Linux command to clear screen
-#endif
-
+    fputs("\x1b[H\x1b[2J\x1b[3J", stdout);
+    fflush(stdout);
 }
