@@ -2,20 +2,67 @@
 #define TETRISH_TETRISD_APP_LAYER_H
 
 #include "htttp_layer.h"
+#include "tetrisbrain/state.h"
 #include "type.h"
+#include <stdint.h>
+
+#define PLAYER_NAME_MAX 20
+
+//! @brief @c Player.room_idx sentinel for not in a room
+#define ROOM_IDX_NONE SIZE_MAX
+
+typedef enum {
+    //! @brief room exists, no game running; @c Room.game is meaningless
+    ROOM_LOBBY,
+    //! @brief @c Room.game is a live board
+    ROOM_IN_GAME,
+} RoomStatus;
 
 /*!
-    @brief Per-fd persistent state. Currently a membership marker only,
-    since the dummy responder is stateless per request; real per-fd game
-    state (e.g. the board, via libtetrisbrain) would go here.
+    @brief Per-fd persistent state. The player id is the key itself (the
+    fd), so it is not stored.
 */
 typedef struct {
-    char _reserved;
-} AppEntry;
+    //! @brief null-terminated, empty string as sentinel for no name set
+    char name[PLAYER_NAME_MAX + 1];
 
-#define SPARSE_SET_ELEM_TYPE AppEntry
-#define SPARSE_SET_TYPEDEF SparseSet_AppEntry
+    //! @brief key into @c AppData.rooms , @c ROOM_IDX_NONE when in no room
+    size_t room_idx;
+} Player;
+
+/*!
+    @brief One player and the game they are in.
+
+    A room holds exactly one member for now, so the member and the board
+    are plain fields. Battle royale replaces both with a per-member
+    collection; nothing here is meant to generalize by tweaking a bound.
+
+    @invariant @c member is a key in @c AppData.players whose @c room_idx
+               is this room's key.
+    @invariant @c game is only meaningful while `status == ROOM_IN_GAME` .
+*/
+typedef struct {
+    Fd member;
+    RoomStatus status;
+    State game;
+} Room;
+
+#define SPARSE_SET_ELEM_TYPE Player
+#define SPARSE_SET_TYPEDEF SparseSet_Player
 #include "collection/sparse_set.h"
+
+#define SPARSE_SET_ELEM_TYPE Room
+#define SPARSE_SET_TYPEDEF SparseSet_Room
+#include "collection/sparse_set.h"
+
+/*
+    Room keys are not derived from anything, unlike player keys, which are
+    fds. Free ones are handed out from this stack rather than scanned for,
+    since the sparse set has no free-key search.
+*/
+#define RING_BUFFER_ELEM_TYPE size_t
+#define RING_BUFFER_TYPEDEF Vec_RoomIdx
+#include "collection/ring_buffer.h"
 
 /*!
     The top layer of the pipeline: it owns no queues of its own. Each layer
@@ -23,11 +70,22 @@ typedef struct {
     parsed input ( @c parsed_qs ) and the response output ( @c response_qs )
     it works on belong to the htttp layer.
 
-    @invariant A key @c fd is in @c entries iff the fd has been accepted and
+    @invariant A key @c fd is in @c players iff the fd has been accepted and
     not closed.
+
+    @invariant A key is in @c rooms iff it is not in @c free_room_idxs .
+
+    @invariant @c in_game_rooms holds exactly the keys of @c rooms whose
+    status is @c ROOM_IN_GAME .
 */
 typedef struct {
-    SparseSet_AppEntry entries;
+    SparseSet_Player players;
+    SparseSet_Room rooms;
+
+    //! @brief iteration index for the tick
+    SparseSet_bool in_game_rooms;
+
+    Vec_RoomIdx free_room_idxs;
 } AppData;
 
 /*!
@@ -35,19 +93,23 @@ typedef struct {
 
     @pre @p data is not initialized
 
-    @post @c entries has capacity @p max_entries and size `0`, with all
+    @post @c players has capacity @p max_entries and size `0`, with all
           elements uninitialized.
+    @post @c rooms and @c in_game_rooms have capacity @p max_rooms and
+          size `0`, with all elements uninitialized, and every key of
+          @c rooms is in @c free_room_idxs .
 
     @return -1 if failed, 0 otherwise
 */
-int AppData_init(AppData* data, size_t max_entries);
+int AppData_init(AppData* data, size_t max_entries, size_t max_rooms);
 
 /*!
     @brief release all memory in @p data
 
     @pre @p data has not been freed
 
-    @post All initialized entries in @c entries are uninitialized
+    @post All initialized entries in @c players and @c rooms are
+          uninitialized
     @post All collection members are freed
 */
 void AppData_free(AppData* data);
@@ -55,13 +117,14 @@ void AppData_free(AppData* data);
 /*!
     @brief initialize entries for each entry in @p fds
 
-    @pre entries in @p fds exist neither in @c entries nor @p err_fds
+    @pre entries in @p fds exist neither in @c players nor @p err_fds
 
-    @post entries in @p fds not marked in @p err_fds are in @c entries .
-          Inserting a membership marker cannot fail within the capacity
-          contract, so no fd is ever marked in @p err_fds here.
+    @post entries in @p fds not marked in @p err_fds are in @c players ,
+          with no name and @c room_idx of @c ROOM_IDX_NONE .
+          Inserting an entry cannot fail within the capacity contract, so
+          no fd is ever marked in @p err_fds here.
 
-    @note if an entry in @p fds appear in @c entries or @c err_fds , that entry is ignored. This is not part of the contract.
+    @note if an entry in @p fds appear in @c players or @c err_fds , that entry is ignored. This is not part of the contract.
 */
 void AppData_accept(
     AppData* data,
@@ -70,13 +133,16 @@ void AppData_accept(
 );
 
 /*!
-    @brief remove entries in @c entries for each entry in @p close_fds
+    @brief remove entries in @c players for each entry in @p close_fds
 
-    @pre the entries in @p close_fds must exist in @c entries
+    @pre the entries in @p close_fds must exist in @c players
 
-    @post the slot in @p close_fds is uninitialized in @c entries
+    @post each entry left whatever room it was in, so that room's key is
+          uninitialized in @c rooms , absent from @c in_game_rooms , and
+          back in @c free_room_idxs
+    @post the slot in @p close_fds is uninitialized in @c players
 
-    @note if an entry does not exist in @c entries , it is ignored. This is not part of the contract.
+    @note if an entry does not exist in @c players , it is ignored. This is not part of the contract.
 */
 void AppData_close(
     AppData* data,
