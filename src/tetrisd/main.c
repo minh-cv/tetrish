@@ -23,8 +23,15 @@ int main(void) {
     }
     #endif
 
+    #ifdef TETRISH_TETRISD_NO_DAEMON
+    // dev mode runs in the foreground; the logger otherwise drops everything
+    logger_init_file(stderr);
+    #endif
+
+    // after incantation(), which sets SIGHUP to SIG_IGN
     if (set_sig_handler(SIGINT, sig_terminate) == -1 ||
         set_sig_handler(SIGTERM, sig_terminate) == -1 ||
+        set_sig_handler(SIGHUP, sig_reload_config) == -1 ||
         set_sig_handler(SIGPIPE, SIG_IGN) == -1
     ) {
         LOGGER_PERROR("signal", "sigaction");
@@ -37,6 +44,12 @@ int main(void) {
     }
 
     while (running) {
+        // set by SIGHUP or POST /reload; a signal interrupts epoll_wait, so
+        // the flag is seen without waiting for traffic
+        if (should_reload_config) {
+            should_reload_config = 0;
+            server_reload_config(&server);
+        }
         server_tick(&server);
     }
 

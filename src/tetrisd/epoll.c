@@ -9,6 +9,7 @@
 
 static DTOR_WRAPPER_DEFINE(free)
 static DTOR_WRAPPER_DEFINE(SparseSet_EpollEntry_free)
+static DTOR_WRAPPER_DEFINE(SparseSet_bool_free)
 
 int Epoll_init(EpollData* data, size_t max_entries, size_t max_events, int epoll_fd) {
     DTOR_DEFINE(errdtor, 10);
@@ -27,6 +28,11 @@ int Epoll_init(EpollData* data, size_t max_entries, size_t max_events, int epoll
     if (SparseSet_bool_init(&data->player_close_fds, max_entries) == -1) {
         DTOR_ERR_RETURN(errdtor, dtor, -1);
     }
+    DTOR_INSERT(errdtor, SparseSet_bool_free, &data->player_close_fds);
+
+    if (SparseSet_bool_init(&data->control_close_fds, max_entries) == -1) {
+        DTOR_ERR_RETURN(errdtor, dtor, -1);
+    }
 
     data->epoll_fd = epoll_fd;
     DTOR_RETURN(dtor, 0);
@@ -34,12 +40,14 @@ int Epoll_init(EpollData* data, size_t max_entries, size_t max_events, int epoll
 
 void Epoll_free(EpollData* data) {
     for (size_t i = 0; i < SparseSet_EpollEntry_size(&data->entries); i++) {
-        if (SparseSet_EpollEntry_at_idx(&data->entries, i)->type == EPOLL_ENTRY_PLAYER) {
+        const EpollEntryType type = SparseSet_EpollEntry_at_idx(&data->entries, i)->type;
+        if (type == EPOLL_ENTRY_PLAYER || type == EPOLL_ENTRY_CONTROL) {
             close((int)SparseSet_EpollEntry_key_at_idx(&data->entries, i));
         }
     }
     close(data->epoll_fd);
     data->epoll_fd = -1;
+    SparseSet_bool_free(&data->control_close_fds);
     SparseSet_bool_free(&data->player_close_fds);
     free(data->events.ptr);
     SparseSet_EpollEntry_free(&data->entries);
@@ -47,6 +55,7 @@ void Epoll_free(EpollData* data) {
 
 void Epoll_reset(EpollData* data) {
     SparseSet_bool_reset(&data->player_close_fds);
+    SparseSet_bool_reset(&data->control_close_fds);
 }
 
 int Epoll_accept_one(EpollData* data, Fd fd, EpollEntryType type, EpollInterest interest) {
@@ -84,14 +93,17 @@ void Epoll_close(EpollData* data, const SparseSet_bool* m_close_fds) {
         // an fd whose registration failed has no entry but is still open
         close((int)fd);
         if (SparseSet_EpollEntry_contains(&data->entries, fd)) {
-            // TODO: remove this once more types are implemented
-            assert(SparseSet_EpollEntry_get(&data->entries, fd)->type == EPOLL_ENTRY_PLAYER);
+            // only the fd-owning entry types may appear in a close set
+            const EpollEntryType type = SparseSet_EpollEntry_get(&data->entries, fd)->type;
+            assert(type == EPOLL_ENTRY_PLAYER || type == EPOLL_ENTRY_CONTROL);
+            (void)type;
             SparseSet_EpollEntry_erase(&data->entries, fd);
         }
     }
 }
 
-int Epoll_poll(EpollData* data, Vec_Fd* player_read, Vec_Fd* player_write, bool* acceptor_readable) {
+int Epoll_poll(EpollData* data, Vec_Fd* player_read, Vec_Fd* player_write, bool* acceptor_readable,
+               Vec_Fd* control_read, Vec_Fd* control_write, bool* control_listener_readable) {
     const int n = epoll_wait(data->epoll_fd, data->events.ptr, (int)data->events.length, -1);
     if (n == -1) {
         if (errno != EINTR) {
@@ -127,6 +139,27 @@ int Epoll_poll(EpollData* data, Vec_Fd* player_read, Vec_Fd* player_write, bool*
                 (void)err;
             }
             break;
+        case EPOLL_ENTRY_CONTROL_LISTENER:
+            if (ev->events & EPOLLIN) {
+                *control_listener_readable = true;
+            }
+            break;
+        case EPOLL_ENTRY_CONTROL:
+            if (ev->events & (EPOLLERR | EPOLLHUP)) {
+                *SparseSet_bool_activate(&data->control_close_fds, (size_t)fd) = true;
+                break;
+            }
+            if (ev->events & EPOLLIN) {
+                const int err = Vec_Fd_push_back(control_read, &fd);
+                assert(err != -1);
+                (void)err;
+            }
+            if (ev->events & EPOLLOUT) {
+                const int err = Vec_Fd_push_back(control_write, &fd);
+                assert(err != -1);
+                (void)err;
+            }
+            break;
         default:
             assert(false);
             break;
@@ -153,13 +186,25 @@ static void sync_interest_one(EpollData* data, size_t fd, EpollEntry* entry, Epo
     entry->current_interest = want;
 }
 
-void Epoll_sync_interest(EpollData* data, const Vec_WriterQueueStatusEntry* write_qs_status, const SparseSet_bool* m_close_fds, Fd acceptor_fd, bool should_stop_accepting) {
+void Epoll_sync_interest(EpollData* data, const Vec_WriterQueueStatusEntry* write_qs_status, const SparseSet_bool* m_close_fds, const Vec_WriterQueueStatusEntry* control_write_qs_status, const SparseSet_bool* m_control_close_fds, Fd acceptor_fd, bool should_stop_accepting) {
+    (void)m_control_close_fds; // assert-only
     for (size_t i = 0; i < Vec_WriterQueueStatusEntry_size(write_qs_status); i++) {
         const WriterQueueStatusEntry* status = Vec_WriterQueueStatusEntry_at(write_qs_status, i);
         const size_t fd = (size_t)status->fd;
         assert(!SparseSet_bool_contains(m_close_fds, fd));
         EpollEntry* entry = SparseSet_EpollEntry_get(&data->entries, fd);
         assert(entry->type == EPOLL_ENTRY_PLAYER);
+        const EpollInterest want =
+            EPOLLIN | (status->status == WRITER_QUEUE_EMPTY ? 0u : (EpollInterest)EPOLLOUT);
+        sync_interest_one(data, fd, entry, want);
+    }
+
+    for (size_t i = 0; i < Vec_WriterQueueStatusEntry_size(control_write_qs_status); i++) {
+        const WriterQueueStatusEntry* status = Vec_WriterQueueStatusEntry_at(control_write_qs_status, i);
+        const size_t fd = (size_t)status->fd;
+        assert(!SparseSet_bool_contains(m_control_close_fds, fd));
+        EpollEntry* entry = SparseSet_EpollEntry_get(&data->entries, fd);
+        assert(entry->type == EPOLL_ENTRY_CONTROL);
         const EpollInterest want =
             EPOLLIN | (status->status == WRITER_QUEUE_EMPTY ? 0u : (EpollInterest)EPOLLOUT);
         sync_interest_one(data, fd, entry, want);

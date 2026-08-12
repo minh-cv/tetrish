@@ -3,6 +3,7 @@
 #include "htttp_layer.h"
 #include "logger.h"
 #include <sys/epoll.h>
+#include <sys/resource.h>
 #include <unistd.h>
 
 static DTOR_WRAPPER_DEFINE(config_var_free)
@@ -13,6 +14,7 @@ static DTOR_WRAPPER_DEFINE(AuthData_free)
 static DTOR_WRAPPER_DEFINE(HtttpData_free)
 static DTOR_WRAPPER_DEFINE(AppData_free)
 
+static DTOR_WRAPPER_DEFINE(Control_free)
 
 int server_init(Server* server) {
     DTOR_DEFINE(errdtor, 10);
@@ -22,6 +24,29 @@ int server_init(Server* server) {
         DTOR_ERR_RETURN(errdtor, dtor, -1);
     }
     DTOR_INSERT(errdtor, config_var_free, &server->cfg);
+
+    // reserve CONTROL_FD_HEADROOM fds above the player budget so a full
+    // player table can never make control accepts fail with EMFILE
+    struct rlimit nofile;
+    if (getrlimit(RLIMIT_NOFILE, &nofile) == -1) {
+        LOGGER_PERROR("server", "getrlimit");
+        DTOR_ERR_RETURN(errdtor, dtor, -1);
+    }
+    if (nofile.rlim_cur != RLIM_INFINITY) {
+        if (nofile.rlim_cur <= CONTROL_FD_HEADROOM) {
+            LOGGER_LOG(LOG_ERROR, "server", "RLIMIT_NOFILE %llu leaves no room for control headroom %u",
+                       (unsigned long long)nofile.rlim_cur, CONTROL_FD_HEADROOM);
+            DTOR_ERR_RETURN(errdtor, dtor, -1);
+        }
+        const rlim_t player_budget = nofile.rlim_cur - CONTROL_FD_HEADROOM;
+        if ((rlim_t)server->cfg.max_fds > player_budget) {
+            LOGGER_LOG(LOG_WARN, "server", "max_fds %u exceeds RLIMIT_NOFILE %llu minus control headroom %u, clamping to %llu",
+                       server->cfg.max_fds, (unsigned long long)nofile.rlim_cur,
+                       CONTROL_FD_HEADROOM, (unsigned long long)player_budget);
+            server->cfg.max_fds = (unsigned int)player_budget;
+        }
+    }
+    const size_t epoll_capacity = (size_t)server->cfg.max_fds + CONTROL_FD_HEADROOM;
 
     if (Acceptor_init(&server->acceptor, server->cfg.address, server->cfg.port, server->cfg.max_fds) == -1) {
         DTOR_ERR_RETURN(errdtor, dtor, -1);
@@ -38,7 +63,7 @@ int server_init(Server* server) {
         LOGGER_PERROR("server", "epoll_create1");
         DTOR_ERR_RETURN(errdtor, dtor, -1);
     }
-    if (Epoll_init(&server->epoll, server->cfg.max_fds, server->cfg.max_events, epoll_fd) == -1) {
+    if (Epoll_init(&server->epoll, epoll_capacity, server->cfg.max_events, epoll_fd) == -1) {
         close(epoll_fd);
         DTOR_ERR_RETURN(errdtor, dtor, -1);
     }
@@ -64,8 +89,21 @@ int server_init(Server* server) {
         DTOR_ERR_RETURN(errdtor, dtor, -1);
     }
     DTOR_INSERT(errdtor, AppData_free, &server->app);
+    if (Control_init(&server->control, server->cfg.control_ipc) == -1) {
+        DTOR_ERR_RETURN(errdtor, dtor, -1);
+    }
+    DTOR_INSERT(errdtor, Control_free, &server->control);
+
+    if (server->control.listen_fd < 0 || (size_t)server->control.listen_fd >= epoll_capacity) {
+        LOGGER_LOG(LOG_ERROR, "server", "control listen fd out of table range");
+        DTOR_ERR_RETURN(errdtor, dtor, -1);
+    }
 
     if (Epoll_accept_one(&server->epoll, server->acceptor.listen_fd, EPOLL_ENTRY_ACCEPTOR, EPOLLIN) == -1) {
+        DTOR_ERR_RETURN(errdtor, dtor, -1);
+    }
+
+    if (Epoll_accept_one(&server->epoll, server->control.listen_fd, EPOLL_ENTRY_CONTROL_LISTENER, EPOLLIN) == -1) {
         DTOR_ERR_RETURN(errdtor, dtor, -1);
     }
 
@@ -74,6 +112,9 @@ int server_init(Server* server) {
 
 void server_free(Server* server) {
     AppData_free(&server->app);
+    // before Epoll_free (which closes control conn fds this layer references)
+    // and before config_var_free (control.ipc_path points into cfg)
+    Control_free(&server->control);
     HtttpData_free(&server->htttp);
     AuthData_free(&server->auth);
     PlayerIo_free(&server->player_io);
@@ -82,10 +123,28 @@ void server_free(Server* server) {
     config_var_free(&server->cfg);
 }
 
+void server_reload_config(Server* server) {
+    struct config_var new_cfg;
+    if (config_var_init(&new_cfg) == -1) {
+        LOGGER_LOG(LOG_WARN, "server", "config reload failed to validate; keeping the running config");
+        return;
+    }
+    // per-connection queue capacity applies to connections accepted from now
+    // on (layers.md: live entries keep the sizes they were accepted with);
+    // capacity, addressing and credential directives require a restart
+    server->cfg.client_capacity = new_cfg.client_capacity;
+    config_var_free(&new_cfg);
+    LOGGER_LOG(LOG_INFO, "server", "config reloaded: client_capacity=%u; other directives need a restart",
+               server->cfg.client_capacity);
+}
+
 void server_tick(Server* server) {
     bool acceptor_readable = false;
+    bool control_listener_readable = false;
     if (Epoll_poll(&server->epoll, &server->player_io.players_reading,
-                   &server->player_io.players_writing, &acceptor_readable) == -1) {
+                   &server->player_io.players_writing, &acceptor_readable,
+                   &server->control.conns_reading, &server->control.conns_writing,
+                   &control_listener_readable) == -1) {
         return;
     }
 
@@ -105,6 +164,31 @@ void server_tick(Server* server) {
                          server->cfg.client_capacity);
 AppData_accept(&server->app, &server->acceptor.accepted, &server->epoll.player_close_fds);
     }
+
+    if (control_listener_readable) {
+        Control_accept(&server->control, (size_t)server->cfg.max_fds + CONTROL_FD_HEADROOM,
+                       &server->control.accepted);
+        Epoll_accept(&server->epoll, &server->control.accepted, EPOLL_ENTRY_CONTROL,
+                     EPOLLIN, &server->epoll.control_close_fds);
+    }
+
+    Control_read(&server->control, &server->control.conns_reading,
+                 &server->epoll.control_close_fds);
+
+    size_t players_authed = 0;
+    for (size_t i = 0; i < SparseSet_AuthEntry_size(&server->auth.entries); i++) {
+        if (SparseSet_AuthEntry_at_idx(&server->auth.entries, i)->auth_state == AUTH_DONE) {
+            players_authed++;
+        }
+    }
+    const ControlStatusSnapshot snapshot = {
+        SparseSet_PlayerIoEntry_size(&server->player_io.entries),
+        players_authed,
+        SparseSet_EpollEntry_size(&server->epoll.entries),
+        server->cfg.max_fds,
+        server->cfg.port,
+    };
+    Control_process(&server->control, &snapshot, &server->epoll.control_close_fds);
 
     PlayerIo_read(&server->player_io, &server->player_io.players_reading,
                   &server->player_io.read_qs, &server->epoll.player_close_fds);
@@ -129,8 +213,13 @@ AppData_accept(&server->app, &server->acceptor.accepted, &server->epoll.player_c
                    &server->player_io.players_writing, &server->epoll.player_close_fds,
                    &server->player_io.vec_write_qs_status);
 
+    Control_write(&server->control, &server->epoll.control_close_fds,
+                  &server->control.write_qs_status);
+
     Epoll_sync_interest(&server->epoll, &server->player_io.vec_write_qs_status,
                         &server->epoll.player_close_fds,
+                        &server->control.write_qs_status,
+                        &server->epoll.control_close_fds,
                         server->acceptor.listen_fd, should_stop_accepting);
 
     PlayerIo_close(&server->player_io, &server->epoll.player_close_fds);
@@ -139,9 +228,13 @@ AppData_accept(&server->app, &server->acceptor.accepted, &server->epoll.player_c
 AppData_close(&server->app, &server->epoll.player_close_fds);
     Epoll_close(&server->epoll, &server->epoll.player_close_fds);
 
+    Control_close(&server->control, &server->epoll.control_close_fds);
+    Epoll_close(&server->epoll, &server->epoll.control_close_fds);
+
     Acceptor_reset(&server->acceptor);
     PlayerIo_reset(&server->player_io);
     AuthData_reset(&server->auth);
     HtttpData_reset(&server->htttp);
+    Control_reset(&server->control);
     Epoll_reset(&server->epoll);
 }
