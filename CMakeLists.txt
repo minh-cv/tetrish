@@ -80,6 +80,12 @@ target_include_directories(backup PRIVATE src/tetrish)
 add_executable(sys src/tetrish/system_programs/sys.c)
 target_include_directories(sys PRIVATE src/tetrish)
 
+add_executable(dspawn src/tetrish/system_programs/dspawn.c)
+target_include_directories(dspawn PRIVATE src/tetrish)
+
+add_executable(dcheck src/tetrish/system_programs/dcheck.c)
+target_include_directories(dcheck PRIVATE src/tetrish)
+
 add_executable(directive src/tetrish/system_programs/directive.c)
 
 install(
@@ -94,6 +100,9 @@ install(
         ldr
         find
         backup
+        sys
+        dspawn
+        dcheck
         directive
     RUNTIME DESTINATION bin           # for executables (and DLLs on Windows)
     LIBRARY DESTINATION lib           # for shared libraries on Unix
