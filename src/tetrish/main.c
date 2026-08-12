@@ -11,16 +11,16 @@
 #include <unistd.h>
 #include <stdio.h>
 
-volatile sig_atomic_t has_child_pid = 0;
-pid_t child_pid;
+static volatile sig_atomic_t has_child_pid = 0;
+static volatile sig_atomic_t child_pid;
 
-static void sigint_handler(int _) {
+static void sigint_handler(int sig) {
+    (void)sig;
     if (has_child_pid == 0) return;
-    kill(child_pid, SIGINT);
+    kill((pid_t)child_pid, SIGINT);
 }
 
 void body(FILE* input) {
-    // Define an array to hold the command and its arguments
     int child_status;
     pid_t pid;
 
@@ -57,8 +57,14 @@ void body(FILE* input) {
             continue;
         }
 
+        sigset_t block_int, prev_mask;
+        sigemptyset(&block_int);
+        sigaddset(&block_int, SIGINT);
+        sigprocmask(SIG_BLOCK, &block_int, &prev_mask);
+
         pid = fork();
         if (pid == 0) {
+            sigprocmask(SIG_SETMASK, &prev_mask, NULL);
             execvp(cmd[0], cmd);
             // If execv returns, command execution has failed
             // perror(cmd[0]);
@@ -66,27 +72,38 @@ void body(FILE* input) {
             _exit(1);
         }
         else if (pid < 0) {
+            sigprocmask(SIG_SETMASK, &prev_mask, NULL);
             fprintf(stderr, "Cannot spawn task\n");
         }
         else {
             child_pid = pid;
             has_child_pid = 1;
-            while (true) {
-                int rc = waitpid(pid, &child_status, WUNTRACED);
-                if (rc == 0) break;
-                if (rc == -1) {
-                    if (errno != EINTR) break;
-                }
-            }
+            sigprocmask(SIG_SETMASK, &prev_mask, NULL);
+
+            pid_t rc;
+            do {
+                rc = waitpid(pid, &child_status, WUNTRACED);
+            } while (rc < 0 && errno == EINTR);
+
             has_child_pid = 0;
+            if (rc > 0 && WIFSTOPPED(child_status)) {
+                fprintf(stderr, "tetrish: [%d] stopped\n", (int)pid);
+            }
         }
         free_command(cmd);
     }
 }
 
-// The main function where the shell's execution begins
 int main(void) {
-    signal(SIGINT, sigint_handler);
+    struct sigaction sa = {0};
+    sa.sa_handler = sigint_handler;
+    sigemptyset(&sa.sa_mask);
+    sa.sa_flags = SA_RESTART;
+    if (sigaction(SIGINT, &sa, NULL) == -1) {
+        perror("tetrish: sigaction");
+        return 1;
+    }
+
     clear();
     FILE* shellrc = fopen(".tetrishrc", "r");
     if (shellrc != NULL) {
