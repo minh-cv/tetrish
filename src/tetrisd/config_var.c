@@ -147,12 +147,25 @@ int config_var_init(struct config_var* cfg_var) {
     }
     DTOR_INSERT(errdtor, free, log_ipc);
 
+    // an absent directive falls back to $PROJECT_DIR/tetrisd.sock so existing
+    // rc files keep working
+    char* control_ipc = config_get_path(&config, "control_ipc", project_dir);
+    if (control_ipc == NULL) {
+        control_ipc = concat_path(project_dir, "tetrisd.sock");
+        if (control_ipc == NULL) {
+            fputs("control_ipc invalid\n", stderr);
+            DTOR_ERR_RETURN(errdtor, dtor, -1);
+        }
+    }
+    DTOR_INSERT(errdtor, free, control_ipc);
+
     struct config_var new_cfg = {
         .port = (int)listen_port_long,
         .address = address,
         .cert_path = cert_path,
         .key_path = key_path,
         .log_ipc = log_ipc,
+        .control_ipc = control_ipc,
         .max_fds = max_fds,
         .max_events = max_events,
         .max_rooms = max_rooms,
@@ -171,4 +184,5 @@ void config_var_free(struct config_var* cfg) {
     free(cfg->key_path);
     free(cfg->address);
     free(cfg->log_ipc);
+    free(cfg->control_ipc);
 }

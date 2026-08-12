@@ -2,3 +2,6 @@ PATH=/path/to/binary/directory:/usr/bin
 
 setenv BACKUP_DIR=tmp
 setenv PROJECT_DIR=/path/to/root/directory
+
+# tetrisd/tetrisctl admin control socket; defaults to $PROJECT_DIR/tetrisd.sock
+# control_ipc=tetrisd.sock

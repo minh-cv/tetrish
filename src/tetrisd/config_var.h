@@ -7,6 +7,7 @@ struct config_var {
     char* cert_path;
     char* key_path;
     char* log_ipc;
+    char* control_ipc;
 
     unsigned int max_fds;
     unsigned int max_events;
