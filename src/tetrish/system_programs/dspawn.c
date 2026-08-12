@@ -7,41 +7,55 @@
 #include <sys/stat.h>
 #include <unistd.h>
 
-static int incantation() {
+typedef enum {
+    DAEMONIZE_CHILD,  // caller is the daemon and should carry on
+    DAEMONIZE_PARENT, // caller is an intermediate process and should exit
+    DAEMONIZE_ERROR,
+} DaemonizeResult;
+
+static DaemonizeResult incantation() {
     int pid = fork();
     if (pid < 0) {
-        perror("dspawn");
-        return 1;
+        perror("dspawn: fork");
+        return DAEMONIZE_ERROR;
     }
     if (pid > 0) {
-        return 1;
+        return DAEMONIZE_PARENT;
     }
-    setsid();
+
+    if (setsid() == -1) {
+        perror("dspawn: setsid");
+        return DAEMONIZE_ERROR;
+    }
     signal(SIGCHLD, SIG_IGN);
     signal(SIGHUP, SIG_IGN);
-    
+
     int daemon_pid = fork();
     if (daemon_pid < 0) {
-        perror("dspawn");
-        return 1;
+        perror("dspawn: fork");
+        return DAEMONIZE_ERROR;
     }
     if (daemon_pid > 0) {
-        return 1;
+        return DAEMONIZE_PARENT;
     }
+
     umask(0);
-    chdir("/");
-    for (int x = (int)sysconf(_SC_OPEN_MAX); x>=0; x--) {
+    if (chdir("/") == -1) {
+        perror("dspawn: chdir");
+        return DAEMONIZE_ERROR;
+    }
+
+    for (int x = (int)sysconf(_SC_OPEN_MAX); x >= 0; x--) {
         close(x);
     }
 
     /*
     * Attach file descriptors 0, 1, and 2 to /dev/null. */
-    open("/dev/null", O_RDWR);
-    dup(0);
-    dup(0);
+    if (open("/dev/null", O_RDWR) == -1 || dup(0) == -1 || dup(0) == -1) {
+        return DAEMONIZE_ERROR;
+    }
 
-
-    return 0;
+    return DAEMONIZE_CHILD;
 }
 
 static int daemon_work(const char* log_out) {
@@ -55,6 +69,8 @@ static int daemon_work(const char* log_out) {
         fflush(logger);
         sleep(2);
     }
+
+    fclose(logger);
     return 0;
 }
 
@@ -66,9 +82,19 @@ int main() {
         return 1;
     }
     int written_char = snprintf(log_out, sizeof log_out, "%s/dspawn.log", project_dir);
-    if (written_char >= PATH_MAX) {
-        fprintf(stderr, "Error: path too long");
+    if (written_char < 0 || written_char >= (int)sizeof log_out) {
+        fprintf(stderr, "Error: log path too long.\n");
+        return 1;
     }
-    if (incantation()) return 0;
-    daemon_work(log_out);
+
+    switch (incantation()) {
+    case DAEMONIZE_PARENT:
+        _exit(0);
+    case DAEMONIZE_ERROR:
+        return 1;
+    case DAEMONIZE_CHILD:
+        break;
+    }
+
+    return daemon_work(log_out);
 }
