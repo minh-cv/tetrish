@@ -7,6 +7,7 @@
 #include <stdint.h>
 #include <stdlib.h>
 #include <string.h>
+#include <sys/wait.h>
 #include <unistd.h>
 #include <stdio.h>
 
@@ -18,33 +19,33 @@ static void sigint_handler(int _) {
     kill(child_pid, SIGINT);
 }
 
-static void free_cmd(char** cmd) {
-    for (int i = 0; cmd[i] != NULL && i < MAX_ARGS; i++) {
-        free(cmd[i]);
-    }
-}
-
 void body(FILE* input) {
     // Define an array to hold the command and its arguments
     int child_status;
     pid_t pid;
-    
+
     while (true) {
-        char *cmd[MAX_ARGS] = {0};
-        if (input == stdin) type_prompt();     // Display the prompt
-        bool read_command_result = read_command_from_file(cmd, input); // Read a command from the user
-        if (cmd[0] == NULL) {
-            free_cmd(cmd);
-            if (!read_command_result) {
-                break;
-            }
+        if (input == stdin) type_prompt();
+
+        char** cmd;
+        size_t argc;
+        ReadCommandResult read_result = read_command_from_file(input, &cmd, &argc);
+        if (read_result == READ_COMMAND_END) {
+            break;
+        }
+        if (read_result == READ_COMMAND_INVALID) {
+            fprintf(stderr, "tetrish: cannot parse command line\n");
+            continue;
+        }
+        if (argc == 0) {
+            free_command(cmd);
             continue;
         }
 
         if (input != stdin) {
             if (strncmp(cmd[0], "PATH=", 5) == 0) {
-                set_env_var((char*[]){NULL, cmd[0]});
-                free_cmd(cmd);
+                set_env_var((char*[]){NULL, cmd[0], NULL});
+                free_command(cmd);
                 continue;
             }
         }
@@ -52,7 +53,7 @@ void body(FILE* input) {
         size_t builtin_idx = get_builtin_command_index(cmd[0]);
         if (builtin_idx != SIZE_MAX) {
             execute_builtin_command(cmd, builtin_idx);
-            free_cmd(cmd);
+            free_command(cmd);
             continue;
         }
 
@@ -79,10 +80,7 @@ void body(FILE* input) {
             }
             has_child_pid = 0;
         }
-        free_cmd(cmd);
-        if (!read_command_result) {
-            break;
-        }
+        free_command(cmd);
     }
 }
 

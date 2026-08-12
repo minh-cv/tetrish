@@ -3,6 +3,7 @@
 // rewrite it) Include the shell header file for necessary constants and
 // function declarations
 #include "libs/shell.h"
+#include "cmdline.h"
 #include <assert.h>
 #include <stddef.h>
 #include <stdint.h>
@@ -37,10 +38,8 @@ static int shell_help(char **args) {
     return 0;
 }
 
-static int shell_exit(char **cmd) {
-    for (int i = 0; cmd[i] != NULL && i < MAX_ARGS; i++) {
-        free(cmd[i]);
-    }
+static int shell_exit(char **args) {
+    (void)args;
     exit(0);
 }
 
@@ -151,7 +150,7 @@ static int (*builtin_command_func[])(char **) = {
     &unset_env_var // builtin_command_func[6]: unsetenv
 };
 
-size_t get_builtin_command_index(char *cmd) {
+size_t get_builtin_command_index(const char *cmd) {
     for (size_t i = 0; i < sizeof(builtin_commands)/sizeof(const char*); i++) {
         if (strcmp(cmd, builtin_commands[i]) == 0) {
             return i;
@@ -164,58 +163,38 @@ void execute_builtin_command(char **cmd, size_t index) {
     builtin_command_func[index](cmd);
 }
 
-// Function to read a command from the user input
-bool read_command_from_file(char **cmd, FILE* file) {
-  // Define a character array to store the command line input
-  char line[MAX_LINE];
-  // Initialize count to keep track of the number of characters read
-  int count = 0, i = 0;
-  // Array to hold pointers to the parsed command arguments
-  char *array[MAX_ARGS], *command_token;
+ReadCommandResult read_command_from_file(FILE* file, char*** out_argv, size_t* out_argc) {
+    *out_argv = NULL;
+    *out_argc = 0;
 
-  // Infinite loop to read characters until a newline or maximum line length is
-  // reached
-  for (;;) {
-    // Read a single character from standard input
-    int current_char = fgetc(file);
-    // Store the character in the line array and increment count
-    line[count++] = (char)(current_char == EOF ? '\n' : current_char);
-    // If a newline character is encountered, break out of the loop
-    if (current_char == '\n' || current_char == EOF)
-      break;
-    // If the command exceeds the maximum length, print an error and exit
-    if (count >= MAX_LINE) {
-      printf("Command is too long, unable to process\n");
-      exit(1);
+    char* line = NULL;
+    size_t capacity = 0;
+    if (getline(&line, &capacity, file) < 0) {
+        free(line);
+        if (ferror(file)) {
+            perror("tetrish: read");
+        }
+        return READ_COMMAND_END;
     }
-  }
-  // Null-terminate the command line string
-  line[count] = '\0';
 
-  // If only the newline character was entered, return without processing
-  if (count == 1)
-    return feof(file) == 0;
+    char** argv = cmdline_parse(line, out_argc);
+    free(line);
+    if (argv == NULL) {
+        return READ_COMMAND_INVALID;
+    }
 
-  // Use strtok to parse the first token (word) of the command
-  command_token = strtok(line, " \n");
-
-  // Continue parsing the line into words and store them in the array
-  while (command_token != NULL) {
-    array[i++] = strdup(command_token);  // Duplicate the token and store it
-    command_token = strtok(NULL, " \n"); // Get the next token
-  }
-
-  // Copy the parsed command and its parameters to the cmd array
-  for (int j = 0; j < i; j++) {
-    cmd[j] = array[j];
-  }
-  // Null-terminate the cmd array to mark the end of arguments
-  cmd[i] = NULL;
-  return feof(file) == 0;
+    *out_argv = argv;
+    return READ_COMMAND_OK;
 }
 
-bool read_command(char **cmd) {
-    return read_command_from_file(cmd, stdin);
+void free_command(char** argv) {
+    if (argv == NULL) {
+        return;
+    }
+    for (char** arg = argv; *arg != NULL; arg++) {
+        free(*arg);
+    }
+    free(argv);
 }
 
 // Function to display the shell prompt
