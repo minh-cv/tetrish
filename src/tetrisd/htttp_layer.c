@@ -2,8 +2,8 @@
 #include "dtor.h"
 #include "htttp.h"
 #include "network/writer.h"
+#include "tetrissh.h"
 #include "type.h"
-#include "wire.h"
 #include <assert.h>
 #include <stdlib.h>
 #include <string.h>
@@ -228,7 +228,7 @@ void HtttpData_serialize(HtttpData* data, const SparseSet_HtttpOutboundMessageQu
                 failed = true;
                 break;
             }
-            if (serialized_len == 0 || serialized_len > FRAME_MAX) {
+            if (serialized_len == 0 || serialized_len > PLAINTEXT_FRAME_MAX) {
                 free(serialized);
                 failed = true;
                 break;

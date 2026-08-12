@@ -150,8 +150,10 @@ void HtttpData_parse(
            @p m_auth_qs and marking fds that should be closed in @p err_fds .
 
     A serialization failure (allocation failure, or a serialized message
-    that is empty or exceeds FRAME_MAX) is an operation failure for that
-    fd, not an in-band condition.
+    that is empty or exceeds PLAINTEXT_FRAME_MAX) is an operation failure
+    for that fd, not an in-band condition. The bound is on the plaintext
+    that still fits a frame once encrypted, since AuthData_encrypt consumes
+    these buffers next.
 
     @pre  No entry of @p m_response_qs is already marked in @p err_fds
     @pre  @p m_response_qs and @p m_auth_qs slots were accepted with the
