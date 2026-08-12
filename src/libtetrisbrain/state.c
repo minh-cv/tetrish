@@ -293,6 +293,9 @@ void update_ghost_piece(BoardState* bs) {
 }
 
 void add_garbage_lines(Board* board, int line_count) {
+    if (line_count <= 0) return;
+    if (line_count > BOARD_HEIGHT) line_count = BOARD_HEIGHT;
+
     for (int i = line_count; i < BOARD_HEIGHT; i++) {
         for (int j = 0; j < BOARD_WIDTH; j++) {
             (board->cells)[i - line_count][j] = (board->cells)[i][j];
