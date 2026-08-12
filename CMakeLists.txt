@@ -29,6 +29,10 @@ add_library(tetrisbrain
 target_include_directories(tetrisbrain PRIVATE include)
 target_compile_options(tetrisbrain PRIVATE -Wno-missing-braces)
 
+add_library(proto src/libproto/proto.c)
+target_include_directories(proto PUBLIC include)
+target_link_libraries(proto PRIVATE wire)
+
 add_executable(tetrisctl src/tetrisctl/main.c src/tetrisctl/config_var.c)
 target_include_directories(tetrisctl PRIVATE src/tetrisctl include)
 target_link_libraries(tetrisctl PRIVATE config htttp tetrissh cjson)
