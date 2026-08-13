@@ -4,6 +4,8 @@
 #include <stddef.h>
 #include <stdio.h>
 
+#define TETRISH_PROMPT "$$ "
+
 typedef enum {
     READ_COMMAND_OK,      // *out_argv holds a (possibly empty) parsed command
     READ_COMMAND_END,     // input is exhausted or unreadable

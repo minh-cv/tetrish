@@ -64,6 +64,9 @@ target_include_directories(tetrisu PRIVATE include)
 add_library(perms src/tetrish/libs/perms.c)
 target_include_directories(perms PUBLIC src/tetrish)
 
+add_library(cmdline src/cmdline/cmdline.c)
+target_include_directories(cmdline PUBLIC include external/corestack/include)
+
 add_executable(tetrish src/tetrish/main.c src/tetrish/shell.c)
 target_include_directories(tetrish PRIVATE src/tetrish)
 target_link_libraries(tetrish PRIVATE cmdline)
@@ -121,6 +124,7 @@ install(
         dspawn
         dcheck
         directive
+        cmdline
     RUNTIME DESTINATION bin           # for executables (and DLLs on Windows)
     LIBRARY DESTINATION lib           # for shared libraries on Unix
     ARCHIVE DESTINATION lib           # for static libs (.a, .lib)

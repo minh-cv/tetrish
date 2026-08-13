@@ -202,7 +202,7 @@ void free_command(char** argv) {
 }
 
 void type_prompt() {
-  printf("$$ ");
+  fputs(TETRISH_PROMPT, stdout);
   fflush(stdout);
 }
 

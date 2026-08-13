@@ -13,11 +13,26 @@
 
 static volatile sig_atomic_t has_child_pid = 0;
 static volatile sig_atomic_t child_pid;
+static volatile sig_atomic_t at_prompt = 0;
+
+// write(2) rather than printf: only async-signal-safe calls belong in a handler.
+static void echo_after_interrupt(const char* text, size_t len) {
+    ssize_t written = write(STDOUT_FILENO, text, len);
+    (void)written;
+}
 
 static void sigint_handler(int sig) {
     (void)sig;
-    if (has_child_pid == 0) return;
-    kill((pid_t)child_pid, SIGINT);
+    if (has_child_pid != 0) {
+        kill((pid_t)child_pid, SIGINT);
+        // The prompt gets redrawn by the read loop once the child is reaped.
+        echo_after_interrupt("\n", 1);
+        return;
+    }
+    if (at_prompt == 0) return;
+    // SA_RESTART resumes the interrupted getline instead of failing it, so the
+    // loop never comes back around to redraw the prompt itself.
+    echo_after_interrupt("\n" TETRISH_PROMPT, sizeof("\n" TETRISH_PROMPT) - 1);
 }
 
 int body(FILE* input) {
@@ -26,11 +41,15 @@ int body(FILE* input) {
     pid_t pid;
 
     while (true) {
-        if (input == stdin) type_prompt();
+        if (input == stdin) {
+            type_prompt();
+            at_prompt = 1;
+        }
 
         char** cmd;
         size_t argc;
         ReadCommandResult read_result = read_command_from_file(input, &cmd, &argc);
+        at_prompt = 0;
         if (read_result == READ_COMMAND_END) {
             break;
         }
