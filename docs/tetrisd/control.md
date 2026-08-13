@@ -53,13 +53,21 @@ tick — a client that pipelines is served one request per tick, not refused.
 listeners and any control connection, and is bounded by `fds_capacity`, the
 effective (possibly rlimit-clamped) `max_fds`.
 
-Reload only re-applies directives that need no reallocation of live state —
-currently `client_capacity`, which affects connections accepted after the
-reload (live connections keep the sizes they were accepted with, see
-`layers.md`). Capacity, addressing and credential directives
-(`max_fds`, `max_events`, `listen_port`, `address`, `control_ipc`,
-`cert_path`, `key_path`) require a restart; a reload that fails validation
-leaves the running config untouched.
+Reload re-applies only directives that need no reallocation of live state, and
+`config_var.h` is the authoritative list. `cert_path` and `key_path` are
+replaced validate-then-swap, so a connection mid-handshake fails and reconnects
+while established sessions are unaffected. `log_ipc` and
+`logger_reconnect_seconds` take effect at the logger's next reconnect.
+`client_capacity` and `max_player_fd` apply to connections accepted after the
+reload — live ones keep the sizes they were accepted with, see `layers.md` —
+and `room_tick_hz` applies at the next room tick.
+
+Everything that sizes a table or binds a socket requires a restart: `max_fds`,
+`max_events`, `max_rooms`, `logger_capacity`, `listen_port`, `address`,
+`control_ipc`. A reload that fails validation logs a warning and leaves the
+running config untouched, including a `max_player_fd` that exceeds `max_fds`;
+one that passes is still clamped to the running `max_fds`, since the rlimit
+clamp runs only at startup.
 
 ## tetrisctl
 
@@ -119,3 +127,62 @@ with `RLIMIT_NOFILE=128`, `max_fds` clamped to 112 and ~300 held TCP
 connections saturating the player table, `tetrisctl status` and `tetrisctl
 shutdown` both answered in ~2–5 ms. Not re-measured since the single-connection
 rework.
+
+## Planned: command dispatch moves to the server
+
+Not implemented. Recorded here because the current arrangement does not extend,
+and the reason is worth having written down before someone adds a command.
+
+Today `Control_process` parses the request, routes it, builds the response and
+stages it — so routing knowledge lives in `control.c`. That works only while
+every command is answerable from the control layer plus a snapshot the server
+hands in. It stops working as soon as commands act on the rest of the daemon:
+closing a room, force-disconnecting a player, draining the acceptor. Those need
+`AppData`, `PlayerIo`, and the close sets, none of which control can reach, and
+none of which it should.
+
+The symptom is already visible. `server_tick` renders the state dump whenever
+*any* control request is queued, because `Control_has_request` reports that a
+frame exists, not what it asks for — so `POST /reload` and `POST /shutdown` pay
+for a render, and its player scan, that they never read.
+
+The intended split is transport versus meaning. Control keeps the socket,
+accept, framing, HTTTP parse and serialize, response staging, close and reset,
+and loses all command knowledge. A `server_process_control` owns a route table
+whose handlers may touch any layer:
+
+```c
+/* control.h — control iterates requests, the server writes answers back */
+bool Control_next_request(ControlData* data, size_t idx, HtttpRequest* out);
+int  Control_respond(ControlData* data, HtttpStatus status, const char* body, size_t body_len);
+bool Control_idle(const ControlData* data);   /* queue drained, writer idle */
+
+/* server.c */
+typedef HtttpStatus (*ControlHandler)(Server*, const HtttpRequest*,
+                                      char* body, size_t body_size, size_t* body_len);
+static const ControlRoute ROUTES[] = {
+    { "GET",  "/status",   handle_status },
+    { "POST", "/reload",   handle_reload },
+    { "POST", "/shutdown", handle_shutdown },
+};
+```
+
+Handlers receive the parsed request, so a later `POST /room/close` reads its
+target from the body and calls into the owning layer directly. `404` and `405`
+become route-table misses in the server. `handle_status` calls
+`render_state_json` itself, so only the command that needs the dump pays for it.
+
+Respond-then-act moves out with the rest. `shutdown_requested` and
+`ControlActions` are command knowledge; under this split `handle_shutdown` sets
+`server->pending_shutdown` and the tick ends with
+
+```c
+if (server->pending_shutdown && Control_idle(&server->control)) return -1;
+```
+
+so control never learns what a shutdown is, and `handle_reload` sets
+`should_reload_config` directly.
+
+The boundary holds only if `Control_respond` is the sole sanctioned way to touch
+`write_q`. Once a handler reaches into `conn` the separation is gone, and the
+one-response-per-request accounting goes with it.
