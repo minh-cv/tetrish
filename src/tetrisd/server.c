@@ -16,6 +16,14 @@ static DTOR_WRAPPER_DEFINE(AppData_free)
 
 static DTOR_WRAPPER_DEFINE(Control_free)
 
+static void clamp_max_player_fd(struct config_var* cfg) {
+    if (cfg->max_player_fd > cfg->max_fds) {
+        LOGGER_LOG(LOG_WARN, "server", "max_player_fd %u exceeds max_fds %u, clamping",
+                   cfg->max_player_fd, cfg->max_fds);
+        cfg->max_player_fd = cfg->max_fds;
+    }
+}
+
 int server_init(Server* server) {
     DTOR_DEFINE(errdtor, 10);
     DTOR_DEFINE(dtor, 1);
@@ -25,28 +33,18 @@ int server_init(Server* server) {
     }
     DTOR_INSERT(errdtor, config_var_free, &server->cfg);
 
-    // reserve CONTROL_FD_HEADROOM fds above the player budget so a full
-    // player table can never make control accepts fail with EMFILE
     struct rlimit nofile;
     if (getrlimit(RLIMIT_NOFILE, &nofile) == -1) {
         LOGGER_PERROR("server", "getrlimit");
         DTOR_ERR_RETURN(errdtor, dtor, -1);
     }
-    if (nofile.rlim_cur != RLIM_INFINITY) {
-        if (nofile.rlim_cur <= CONTROL_FD_HEADROOM) {
-            LOGGER_LOG(LOG_ERROR, "server", "RLIMIT_NOFILE %llu leaves no room for control headroom %u",
-                       (unsigned long long)nofile.rlim_cur, CONTROL_FD_HEADROOM);
-            DTOR_ERR_RETURN(errdtor, dtor, -1);
-        }
-        const rlim_t player_budget = nofile.rlim_cur - CONTROL_FD_HEADROOM;
-        if ((rlim_t)server->cfg.max_fds > player_budget) {
-            LOGGER_LOG(LOG_WARN, "server", "max_fds %u exceeds RLIMIT_NOFILE %llu minus control headroom %u, clamping to %llu",
-                       server->cfg.max_fds, (unsigned long long)nofile.rlim_cur,
-                       CONTROL_FD_HEADROOM, (unsigned long long)player_budget);
-            server->cfg.max_fds = (unsigned int)player_budget;
-        }
+    if (nofile.rlim_cur != RLIM_INFINITY && (rlim_t)server->cfg.max_fds > nofile.rlim_cur) {
+        LOGGER_LOG(LOG_WARN, "server", "max_fds %u exceeds RLIMIT_NOFILE %llu, clamping",
+                   server->cfg.max_fds, (unsigned long long)nofile.rlim_cur);
+        server->cfg.max_fds = (unsigned int)nofile.rlim_cur;
     }
-    const size_t epoll_capacity = (size_t)server->cfg.max_fds + CONTROL_FD_HEADROOM;
+    clamp_max_player_fd(&server->cfg);
+    const size_t epoll_capacity = (size_t)server->cfg.max_fds;
 
     if (Acceptor_init(&server->acceptor, server->cfg.address, server->cfg.port, server->cfg.max_fds) == -1) {
         DTOR_ERR_RETURN(errdtor, dtor, -1);
@@ -123,19 +121,42 @@ void server_free(Server* server) {
     config_var_free(&server->cfg);
 }
 
+static void swap_str(char** a, char** b) {
+    char* const tmp = *a;
+    *a = *b;
+    *b = tmp;
+}
+
 void server_reload_config(Server* server) {
     struct config_var new_cfg;
     if (config_var_init(&new_cfg) == -1) {
         LOGGER_LOG(LOG_WARN, "server", "config reload failed to validate; keeping the running config");
         return;
     }
-    // per-connection queue capacity applies to connections accepted from now
-    // on (layers.md: live entries keep the sizes they were accepted with);
-    // capacity, addressing and credential directives require a restart
+
+    if (AuthData_reload_credential(&server->auth, new_cfg.key_path, new_cfg.cert_path) == -1) {
+        LOGGER_LOG(LOG_WARN, "server", "credential reload failed; keeping the running config");
+        config_var_free(&new_cfg);
+        return;
+    }
+
+    swap_str(&server->cfg.cert_path, &new_cfg.cert_path);
+    swap_str(&server->cfg.key_path, &new_cfg.key_path);
+    swap_str(&server->cfg.log_ipc, &new_cfg.log_ipc);
+
     server->cfg.client_capacity = new_cfg.client_capacity;
+    server->cfg.max_player_fd = new_cfg.max_player_fd;
+    server->cfg.room_tick_hz = new_cfg.room_tick_hz;
+    server->cfg.logger_reconnect_seconds = new_cfg.logger_reconnect_seconds;
+    clamp_max_player_fd(&server->cfg);
+
     config_var_free(&new_cfg);
-    LOGGER_LOG(LOG_INFO, "server", "config reloaded: client_capacity=%u; other directives need a restart",
-               server->cfg.client_capacity);
+
+    LOGGER_LOG(LOG_INFO, "server",
+               "config reloaded: credentials, log_ipc, logger_reconnect_seconds=%u, "
+               "client_capacity=%u, max_player_fd=%u, room_tick_hz=%u",
+               server->cfg.logger_reconnect_seconds, server->cfg.client_capacity,
+               server->cfg.max_player_fd, server->cfg.room_tick_hz);
 }
 
 void server_tick(Server* server) {
@@ -150,7 +171,7 @@ void server_tick(Server* server) {
 
     bool should_stop_accepting = false;
     if (acceptor_readable) {
-        Acceptor_accept(&server->acceptor, server->cfg.max_fds, &server->acceptor.accepted, &should_stop_accepting);
+        Acceptor_accept(&server->acceptor, server->cfg.max_player_fd, &server->acceptor.accepted, &should_stop_accepting);
         Epoll_accept(&server->epoll, &server->acceptor.accepted, EPOLL_ENTRY_PLAYER, EPOLLIN, &server->epoll.player_close_fds);
         // capacity contract: every layer's queues are accepted with the same
         // cfg.client_capacity and each stage emits at most one frame per
@@ -166,7 +187,7 @@ AppData_accept(&server->app, &server->acceptor.accepted, &server->epoll.player_c
     }
 
     if (control_listener_readable) {
-        Control_accept(&server->control, (size_t)server->cfg.max_fds + CONTROL_FD_HEADROOM,
+        Control_accept(&server->control, server->epoll.entries.capacity,
                        &server->control.accepted);
         Epoll_accept(&server->epoll, &server->control.accepted, EPOLL_ENTRY_CONTROL,
                      EPOLLIN, &server->epoll.control_close_fds);

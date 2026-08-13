@@ -6,14 +6,6 @@
 
 #define CONTROL_MAX_CONNS 2u
 
-/*
-    fds reserved above cfg.max_fds for the control plane and the daemon's
-    static fds (listeners, epoll fd, std fds). The epoll table is sized
-    cfg.max_fds + CONTROL_FD_HEADROOM while player admission stays capped at
-    cfg.max_fds, so a saturated player table can never starve control accepts.
-*/
-#define CONTROL_FD_HEADROOM 16u
-
 typedef enum {
     CONTROL_CONN_READING,
     CONTROL_CONN_RESPONDING,
