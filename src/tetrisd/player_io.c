@@ -1,5 +1,6 @@
 #include "player_io.h"
 #include "dtor.h"
+#include "logger.h"
 #include <assert.h>
 #include <stdlib.h>
 
@@ -159,6 +160,7 @@ void PlayerIo_close(PlayerIo* data, const SparseSet_bool* close_fds) {
         }
 
         SparseSet_PlayerIoEntry_erase(&data->entries, fd);
+        LOGGER_LOG(LOG_INFO, "player_io", "connection closed fd=%zu", fd);
     }
 }
 

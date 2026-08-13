@@ -1,6 +1,7 @@
 #include "htttp_layer.h"
 #include "dtor.h"
 #include "htttp.h"
+#include "logger.h"
 #include "network/writer.h"
 #include "tetrissh.h"
 #include "type.h"
@@ -20,6 +21,20 @@ static void writer_queue_drain(WriterFrameQueue* q) {
         free((void*)WriterFrameQueue_front(q)->ptr);
         WriterFrameQueue_pop_front(q);
     }
+}
+
+static const char* frame_status_name(FrameStatus status) {
+    switch (status) {
+    case FRAME_OK:
+        return "ok";
+    case FRAME_DECRYPT_ERROR:
+        return "undecryptable";
+    case FRAME_PAYLOAD_TOO_LARGE:
+        return "oversized";
+    case FRAME_HTTTP_PARSE_ERROR:
+        return "malformed";
+    }
+    return "unknown";
 }
 
 static void response_queue_drain(HtttpOutboundMessageQueue* q) {
@@ -193,6 +208,18 @@ void HtttpData_parse(HtttpData* data, const SparseSet_AuthFrameQueue* m_decrypt_
                 parsed.status = frame->status;
             }
 
+            if (parsed.status != FRAME_OK) {
+                LOGGER_LOG(LOG_WARN, "htttp", "fd=%zu frame rejected: %s",
+                           fd, frame_status_name(parsed.status));
+            }
+            else if (parsed.message.is_request) {
+                LOGGER_LOG(LOG_INFO, "htttp", "fd=%zu request %s %s",
+                           fd, parsed.message.request.method, parsed.message.request.path);
+            }
+            else {
+                LOGGER_LOG(LOG_WARN, "htttp", "fd=%zu sent a response, not a request", fd);
+            }
+
             const int err = HtttpParsedMessageQueue_push_back(out, &parsed);
             assert(err != -1);
             (void)err;
@@ -221,6 +248,14 @@ void HtttpData_serialize(HtttpData* data, const SparseSet_HtttpOutboundMessageQu
 
         for (size_t j = 0; j < count; j++) {
             const HtttpOutboundMessage* outbound = HtttpOutboundMessageQueue_at(q, j);
+
+            // responses only: the STATE push is per-tick per room, so logging
+            // it would evict everything else from the queue
+            if (!outbound->message.is_request) {
+                LOGGER_LOG(LOG_INFO, "htttp", "fd=%zu response %d %s", fd,
+                           (int)outbound->message.response.status,
+                           outbound->message.response.reason);
+            }
 
             size_t serialized_len = 0;
             unsigned char* serialized = htttp_serialize(&outbound->message, &serialized_len);

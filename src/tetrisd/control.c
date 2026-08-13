@@ -184,6 +184,7 @@ Fd Control_accept(ControlData* data, size_t fd_capacity) {
             close(fd);
             continue;
         }
+        LOGGER_LOG(LOG_INFO, "control", "admin connected fd=%d", fd);
         accepted = fd;
     }
 }
@@ -218,10 +219,15 @@ static int process_one(ControlConn* conn, const ReaderFrame* frame,
     bool shutdown_requested = false;
     bool reload_requested = false;
 
+    const char* method = "?";
+    const char* path = "?";
+
     HtttpMessage parsed;
     if (frame->status == READER_FRAME_OK &&
         htttp_parse(frame->content.ptr, frame->content.length, &parsed) == 0 &&
         parsed.is_request) {
+        method = parsed.request.method;
+        path = parsed.request.path;
         if (strcmp(parsed.request.path, "/status") == 0) {
             if (strcmp(parsed.request.method, "GET") != 0) {
                 status = HTTTP_STATUS_METHOD_NOT_ALLOWED;
@@ -295,6 +301,9 @@ static int process_one(ControlConn* conn, const ReaderFrame* frame,
     if (reload_requested) {
         m_actions->reload_config = true;
     }
+
+    LOGGER_LOG(LOG_INFO, "control", "admin fd=%d %s %s -> %d %s",
+               conn->fd, method, path, (int)status, htttp_status_reason(status));
     return 0;
 }
 
@@ -353,5 +362,6 @@ void Control_close(ControlData* data, const SparseSet_bool* m_close_fds) {
     if (conn->fd == -1 || !SparseSet_bool_contains(m_close_fds, (size_t)conn->fd)) {
         return;
     }
+    LOGGER_LOG(LOG_INFO, "control", "admin disconnected fd=%d", conn->fd);
     conn_free(conn);
 }

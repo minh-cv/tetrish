@@ -1,4 +1,5 @@
 #include "app/room.h"
+#include "logger.h"
 #include "tetrisbrain/control.h"
 #include "tetrisbrain/state.h"
 #include <assert.h>
@@ -32,6 +33,7 @@ int room_create(AppData* data, Fd fd, size_t* out_room_idx) {
     Vec_RoomIdx_pop_back(&data->free_room_idxs);
     player->room_idx = room_idx;
     *out_room_idx = room_idx;
+    LOGGER_LOG(LOG_INFO, "room", "room=%zu created by fd=%d", room_idx, fd);
     return 0;
 }
 
@@ -47,6 +49,8 @@ void room_start(AppData* data, size_t room_idx) {
     memset(room->inputs, 0, sizeof(room->inputs));
     room->status = ROOM_IN_GAME;
     *SparseSet_bool_activate(&data->in_game_rooms, room_idx) = true;
+    LOGGER_LOG(LOG_INFO, "room", "room=%zu game started for fd=%d, seed=%llu",
+               room_idx, room->member, (unsigned long long)seed);
 }
 
 void room_tick(AppData* data, size_t room_idx) {
@@ -66,10 +70,13 @@ void room_tick(AppData* data, size_t room_idx) {
 void room_end(AppData* data, size_t room_idx) {
     assert(SparseSet_Room_contains(&data->rooms, room_idx));
 
-    SparseSet_Room_get(&data->rooms, room_idx)->status = ROOM_LOBBY;
+    Room* room = SparseSet_Room_get(&data->rooms, room_idx);
+    room->status = ROOM_LOBBY;
     if (SparseSet_bool_contains(&data->in_game_rooms, room_idx)) {
         SparseSet_bool_erase(&data->in_game_rooms, room_idx);
     }
+    LOGGER_LOG(LOG_INFO, "room", "room=%zu game over for fd=%d, score=%d",
+               room_idx, room->member, room->game.score);
 }
 
 void room_leave(AppData* data, Fd fd) {
@@ -90,6 +97,7 @@ void room_leave(AppData* data, Fd fd) {
         SparseSet_bool_erase(&data->in_game_rooms, room_idx);
     }
 
+    LOGGER_LOG(LOG_INFO, "room", "room=%zu closed, fd=%d left", room_idx, fd);
     memset(SparseSet_Room_get(&data->rooms, room_idx), 0, sizeof(Room));
     SparseSet_Room_erase(&data->rooms, room_idx);
 
