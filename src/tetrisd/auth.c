@@ -355,12 +355,25 @@ void AuthData_encrypt(AuthData* data, const SparseSet_WriterFrameQueue* m_encryp
 
             WriterFrameQueue* wq = SparseSet_WriterFrameQueue_activate(out, fd);
             const WriterFrame cipher_frame = { cipher, cipher_len };
-            if (WriterFrameQueue_push_back(wq, &cipher_frame) == -1) {
-                // Dropped, not an error: the client's timeout will retransmit the request.
-                // TODO: proper backpressure belongs in the application layer, which would
-                // have to see write-queue occupancy to stop producing responses; once it
-                // does, this becomes an assert that the queue is never full here.
-                LOGGER_LOG(LOG_WARN, "auth", "write queue full, dropping response for fd=%zu", fd);
+            // backpressure contract: PlayerIo_write reports WRITER_QUEUE_FULL
+            // once this queue passes half its capacity, and Epoll_sync_interest
+            // then withholds EPOLLIN for that fd, so no further request is
+            // admitted from this client. write_qs is sized at twice the read
+            // capacity (PlayerIo_accept), so the half above the watermark
+            // covers everything a tick can still deliver: at most
+            // cfg.client_capacity frames, since response_qs and encrypt_qs each
+            // hold that many and every stage emits at most one frame per input
+            // frame. AppData_room_tick's STATE push competes for those same
+            // response_qs slots and, being enqueued after the responses, is the
+            // one discarded when they are full, so it never displaces a
+            // response. Peak occupancy is therefore half + read capacity —
+            // exactly capacity — and this queue cannot be full here.
+            const int err = WriterFrameQueue_push_back(wq, &cipher_frame);
+            assert(err != -1 && "write_qs reserves half its capacity for admitted requests");
+            if (err == -1) {
+                LOGGER_LOG(LOG_ERROR, "auth",
+                           "write queue full for fd=%zu, dropping frame: the backpressure "
+                           "reserve was violated, so a response can be lost", fd);
                 free(cipher);
             }
         }

@@ -1,6 +1,7 @@
 #include "epoll.h"
 #include "dtor.h"
 #include "logger.h"
+#include "type.h"
 #include <assert.h>
 #include <errno.h>
 #include <stdlib.h>
@@ -231,7 +232,7 @@ void Epoll_sync_interest(EpollData* data, const Vec_WriterQueueStatusEntry* writ
         EpollEntry* entry = SparseSet_EpollEntry_get(&data->entries, fd);
         assert(entry->type == EPOLL_ENTRY_PLAYER);
         const EpollInterest want =
-            EPOLLIN | (status->status == WRITER_QUEUE_EMPTY ? 0u : (EpollInterest)EPOLLOUT);
+            (status->status != WRITER_QUEUE_FULL ? EPOLLIN : 0) | (status->status == WRITER_QUEUE_EMPTY ? 0u : (EpollInterest)EPOLLOUT);
         sync_interest_one(data, fd, entry, want);
     }
 

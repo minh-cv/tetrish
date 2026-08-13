@@ -115,7 +115,7 @@ void PlayerIo_accept(PlayerIo* data, const Vec_Fd* fds, SparseSet_bool* err_fds,
         }
 
         WriterFrameQueue* wq = SparseSet_WriterFrameQueue_value_at(&data->write_qs, fd);
-        if (WriterFrameQueue_init(wq, queue_capacity) == -1) {
+        if (WriterFrameQueue_init(wq, queue_capacity*2) == -1) {
             *SparseSet_bool_activate(err_fds, fd) = true;
             continue;
         }
@@ -251,7 +251,7 @@ void PlayerIo_write(PlayerIo* data, SparseSet_WriterFrameQueue* m_write_qs, cons
         if (is_empty) {
             status.status = WRITER_QUEUE_EMPTY;
         }
-        else if (len == WriterFrameQueue_capacity(q)) {
+        else if (len > WriterFrameQueue_capacity(q)/2) {
             status.status = WRITER_QUEUE_FULL;
         }
         else {
