@@ -186,3 +186,45 @@ so control never learns what a shutdown is, and `handle_reload` sets
 The boundary holds only if `Control_respond` is the sole sanctioned way to touch
 `write_q`. Once a handler reaches into `conn` the separation is gone, and the
 one-response-per-request accounting goes with it.
+
+## Planned: the close set becomes a single fd
+
+Not implemented. Left over from the two-connection design.
+
+The pairing at the end of the tick is not the leftover and should not be
+collapsed:
+
+```c
+Control_close(&server->control, &server->epoll.control_close_fds);
+Epoll_close(&server->epoll, &server->epoll.control_close_fds);
+```
+
+That is the fd ownership split, the same one players use. `Control_close` frees
+the layer's own state; `Epoll_close` owns the `close(2)` and drops the table
+entry. Merging them would put fd ownership back inside the layer, which is
+exactly what centralising it in the epoll layer was for.
+
+What is left over is `control_close_fds` being a `SparseSet_bool` sized
+`max_fds` (`epoll.c`), when at most one fd can ever be in it. That bound is
+provable, not incidental: `Control_accept` refuses to admit while
+`conn.fd != -1`, and it runs before `Control_hangup` in the tick, so a live
+connection blocks any second fd from appearing. Every other writer —
+`Control_read`, `Control_process`, `Control_write`, `Control_hangup` — marks the
+same `conn.fd`, and the registration-failure path marks a freshly accepted fd,
+which only exists when there was no connection to begin with.
+
+The cost is memory rather than time. `Epoll_close` and `Epoll_reset` both
+iterate the dense array, which is empty on almost every tick, so there is no
+per-tick penalty; it is the two allocations of `max_fds` entries each, tens of
+KB at the default, standing in for one `Fd`.
+
+The fix completes a family epoll has already grown for singleton entries.
+`Epoll_accept_one`, `Epoll_set_interest` and `Epoll_erase_one` exist; the
+missing member is an `Epoll_close_one(data, fd)` that closes and erases.
+`control_close_fds` then becomes a plain `Fd`, `-1` when nothing is closing, and
+`Epoll_close` over a set belongs to players alone — the only layer that
+genuinely has many. See `logger.md` for the same single-fd argument applied to
+the logger, which needs erase-without-close rather than this.
+
+The knock-on is that the four `SparseSet_bool_contains` guards inside
+`control.c` become a comparison against one fd, or a flag on the connection.
