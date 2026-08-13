@@ -160,17 +160,14 @@ void server_reload_config(Server* server) {
 }
 
 void server_tick(Server* server) {
-    bool acceptor_readable = false;
-    bool control_listener_readable = false;
+    EpollSignals signals = {0};
     if (Epoll_poll(&server->epoll, &server->player_io.players_reading,
-                   &server->player_io.players_writing, &acceptor_readable,
-                   &server->control.conns_reading, &server->control.conns_writing,
-                   &control_listener_readable) == -1) {
+                   &server->player_io.players_writing, &signals) == -1) {
         return;
     }
 
     bool should_stop_accepting = false;
-    if (acceptor_readable) {
+    if (signals.acceptor_readable) {
         Acceptor_accept(&server->acceptor, server->cfg.max_player_fd, &server->acceptor.accepted, &should_stop_accepting);
         Epoll_accept(&server->epoll, &server->acceptor.accepted, EPOLL_ENTRY_PLAYER, EPOLLIN, &server->epoll.player_close_fds);
         // capacity contract: every layer's queues are accepted with the same
@@ -183,18 +180,24 @@ void server_tick(Server* server) {
                         server->cfg.client_capacity);
         HtttpData_accept(&server->htttp, &server->acceptor.accepted, &server->epoll.player_close_fds,
                          server->cfg.client_capacity);
-AppData_accept(&server->app, &server->acceptor.accepted, &server->epoll.player_close_fds);
+        AppData_accept(&server->app, &server->acceptor.accepted, &server->epoll.player_close_fds);
     }
 
-    if (control_listener_readable) {
-        Control_accept(&server->control, server->epoll.entries.capacity,
-                       &server->control.accepted);
-        Epoll_accept(&server->epoll, &server->control.accepted, EPOLL_ENTRY_CONTROL,
-                     EPOLLIN, &server->epoll.control_close_fds);
+    if (signals.control_listener_readable) {
+        const Fd control_fd = Control_accept(&server->control, server->epoll.entries.capacity);
+        if (control_fd != -1 &&
+            Epoll_accept_one(&server->epoll, control_fd, EPOLL_ENTRY_CONTROL, EPOLLIN) == -1) {
+            *SparseSet_bool_activate(&server->epoll.control_close_fds, (size_t)control_fd) = true;
+        }
     }
 
-    Control_read(&server->control, &server->control.conns_reading,
-                 &server->epoll.control_close_fds);
+    if (signals.control_hangup && server->control.conn.fd != -1) {
+        *SparseSet_bool_activate(&server->epoll.control_close_fds,
+                                 (size_t)server->control.conn.fd) = true;
+    }
+    if (signals.control_readable) {
+        Control_read(&server->control, &server->epoll.control_close_fds);
+    }
 
     size_t players_authed = 0;
     for (size_t i = 0; i < SparseSet_AuthEntry_size(&server->auth.entries); i++) {
@@ -205,8 +208,9 @@ AppData_accept(&server->app, &server->acceptor.accepted, &server->epoll.player_c
     const ControlStatusSnapshot snapshot = {
         SparseSet_PlayerIoEntry_size(&server->player_io.entries),
         players_authed,
+        server->cfg.max_player_fd,
         SparseSet_EpollEntry_size(&server->epoll.entries),
-        server->cfg.max_fds,
+        server->epoll.entries.capacity,
         server->cfg.port,
     };
     Control_process(&server->control, &snapshot, &server->epoll.control_close_fds);
@@ -234,13 +238,18 @@ AppData_accept(&server->app, &server->acceptor.accepted, &server->epoll.player_c
                    &server->player_io.players_writing, &server->epoll.player_close_fds,
                    &server->player_io.vec_write_qs_status);
 
-    Control_write(&server->control, &server->epoll.control_close_fds,
-                  &server->control.write_qs_status);
+    Control_write(&server->control, &server->epoll.control_close_fds);
+    if (server->control.conn.fd != -1 &&
+        !SparseSet_bool_contains(&server->epoll.control_close_fds,
+                                 (size_t)server->control.conn.fd)) {
+        Epoll_set_interest(&server->epoll, server->control.conn.fd,
+                           EPOLLIN | (Control_wants_write(&server->control)
+                                          ? (EpollInterest)EPOLLOUT
+                                          : 0u));
+    }
 
     Epoll_sync_interest(&server->epoll, &server->player_io.vec_write_qs_status,
                         &server->epoll.player_close_fds,
-                        &server->control.write_qs_status,
-                        &server->epoll.control_close_fds,
                         server->acceptor.listen_fd, should_stop_accepting);
 
     PlayerIo_close(&server->player_io, &server->epoll.player_close_fds);

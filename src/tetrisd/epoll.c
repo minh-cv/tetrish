@@ -102,8 +102,7 @@ void Epoll_close(EpollData* data, const SparseSet_bool* m_close_fds) {
     }
 }
 
-int Epoll_poll(EpollData* data, Vec_Fd* player_read, Vec_Fd* player_write, bool* acceptor_readable,
-               Vec_Fd* control_read, Vec_Fd* control_write, bool* control_listener_readable) {
+int Epoll_poll(EpollData* data, Vec_Fd* player_read, Vec_Fd* player_write, EpollSignals* m_signals) {
     const int n = epoll_wait(data->epoll_fd, data->events.ptr, (int)data->events.length, -1);
     if (n == -1) {
         if (errno != EINTR) {
@@ -120,11 +119,14 @@ int Epoll_poll(EpollData* data, Vec_Fd* player_read, Vec_Fd* player_write, bool*
         switch (entry->type) {
         case EPOLL_ENTRY_ACCEPTOR:
             if (ev->events & EPOLLIN) {
-                *acceptor_readable = true;
+                m_signals->acceptor_readable = true;
             }
             break;
         case EPOLL_ENTRY_PLAYER:
-            if (ev->events & (EPOLLERR | EPOLLHUP)) {
+            // EPOLLIN first: a peer that sends and closes reports both at once,
+            // and the pending bytes are still worth reading. The reader sees
+            // EOF on its next pass and fails the fd then.
+            if (ev->events & EPOLLERR) {
                 *SparseSet_bool_activate(&data->player_close_fds, (size_t)fd) = true;
                 break;
             }
@@ -132,6 +134,10 @@ int Epoll_poll(EpollData* data, Vec_Fd* player_read, Vec_Fd* player_write, bool*
                 const int err = Vec_Fd_push_back(player_read, &fd);
                 assert(err != -1);
                 (void)err;
+            }
+            else if (ev->events & EPOLLHUP) {
+                *SparseSet_bool_activate(&data->player_close_fds, (size_t)fd) = true;
+                break;
             }
             if (ev->events & EPOLLOUT) {
                 const int err = Vec_Fd_push_back(player_write, &fd);
@@ -141,23 +147,23 @@ int Epoll_poll(EpollData* data, Vec_Fd* player_read, Vec_Fd* player_write, bool*
             break;
         case EPOLL_ENTRY_CONTROL_LISTENER:
             if (ev->events & EPOLLIN) {
-                *control_listener_readable = true;
+                m_signals->control_listener_readable = true;
             }
             break;
         case EPOLL_ENTRY_CONTROL:
-            if (ev->events & (EPOLLERR | EPOLLHUP)) {
-                *SparseSet_bool_activate(&data->control_close_fds, (size_t)fd) = true;
+            if (ev->events & EPOLLERR) {
+                m_signals->control_hangup = true;
                 break;
             }
             if (ev->events & EPOLLIN) {
-                const int err = Vec_Fd_push_back(control_read, &fd);
-                assert(err != -1);
-                (void)err;
+                m_signals->control_readable = true;
+            }
+            else if (ev->events & EPOLLHUP) {
+                m_signals->control_hangup = true;
+                break;
             }
             if (ev->events & EPOLLOUT) {
-                const int err = Vec_Fd_push_back(control_write, &fd);
-                assert(err != -1);
-                (void)err;
+                m_signals->control_writable = true;
             }
             break;
         default:
@@ -186,25 +192,19 @@ static void sync_interest_one(EpollData* data, size_t fd, EpollEntry* entry, Epo
     entry->current_interest = want;
 }
 
-void Epoll_sync_interest(EpollData* data, const Vec_WriterQueueStatusEntry* write_qs_status, const SparseSet_bool* m_close_fds, const Vec_WriterQueueStatusEntry* control_write_qs_status, const SparseSet_bool* m_control_close_fds, Fd acceptor_fd, bool should_stop_accepting) {
-    (void)m_control_close_fds; // assert-only
+void Epoll_set_interest(EpollData* data, Fd fd, EpollInterest interest) {
+    EpollEntry* entry = SparseSet_EpollEntry_get(&data->entries, (size_t)fd);
+    assert(entry->type != EPOLL_ENTRY_PLAYER && "players go through Epoll_sync_interest");
+    sync_interest_one(data, (size_t)fd, entry, interest);
+}
+
+void Epoll_sync_interest(EpollData* data, const Vec_WriterQueueStatusEntry* write_qs_status, const SparseSet_bool* m_close_fds, Fd acceptor_fd, bool should_stop_accepting) {
     for (size_t i = 0; i < Vec_WriterQueueStatusEntry_size(write_qs_status); i++) {
         const WriterQueueStatusEntry* status = Vec_WriterQueueStatusEntry_at(write_qs_status, i);
         const size_t fd = (size_t)status->fd;
         assert(!SparseSet_bool_contains(m_close_fds, fd));
         EpollEntry* entry = SparseSet_EpollEntry_get(&data->entries, fd);
         assert(entry->type == EPOLL_ENTRY_PLAYER);
-        const EpollInterest want =
-            EPOLLIN | (status->status == WRITER_QUEUE_EMPTY ? 0u : (EpollInterest)EPOLLOUT);
-        sync_interest_one(data, fd, entry, want);
-    }
-
-    for (size_t i = 0; i < Vec_WriterQueueStatusEntry_size(control_write_qs_status); i++) {
-        const WriterQueueStatusEntry* status = Vec_WriterQueueStatusEntry_at(control_write_qs_status, i);
-        const size_t fd = (size_t)status->fd;
-        assert(!SparseSet_bool_contains(m_control_close_fds, fd));
-        EpollEntry* entry = SparseSet_EpollEntry_get(&data->entries, fd);
-        assert(entry->type == EPOLL_ENTRY_CONTROL);
         const EpollInterest want =
             EPOLLIN | (status->status == WRITER_QUEUE_EMPTY ? 0u : (EpollInterest)EPOLLOUT);
         sync_interest_one(data, fd, entry, want);

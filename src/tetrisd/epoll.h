@@ -36,6 +36,19 @@ typedef struct {
     SparseSet_bool control_close_fds;
 } EpollData;
 
+/*!
+    Per-tick readiness of the singleton entries, which have no fd list of their
+    own to report through the way players do.
+*/
+typedef struct {
+    bool acceptor_readable;
+    bool control_listener_readable;
+    bool control_readable;
+    bool control_writable;
+    // EPOLLERR/EPOLLHUP on the control connection, reported whatever the mask
+    bool control_hangup;
+} EpollSignals;
+
 // takes ownership of epoll_fd; player and control-connection fds are closed by
 // Epoll_close/Epoll_free, other fds (acceptor, listeners, ...) stay owned by
 // their layer.
@@ -76,14 +89,22 @@ void Epoll_close(
     const SparseSet_bool* m_close_fds
 );
 
+/*!
+    Interest update for a singleton entry, a no-op when the mask is unchanged.
+    Players go through Epoll_sync_interest instead, which derives the mask from
+    their write-queue level.
+*/
+void Epoll_set_interest(
+    EpollData* data,
+    Fd fd,
+    EpollInterest interest
+);
+
 int Epoll_poll(
     EpollData* data,
     Vec_Fd* player_read,
     Vec_Fd* player_write,
-    bool* acceptor_readable,
-    Vec_Fd* control_read,
-    Vec_Fd* control_write,
-    bool* control_listener_readable
+    EpollSignals* m_signals
 );
 
 /*!
@@ -91,20 +112,17 @@ int Epoll_poll(
     entry's status is not WRITER_QUEUE_EMPTY, visiting only the fds listed in
     write_qs_status — PlayerIo_write's postcondition guarantees that list covers
     exactly the fds whose queue level could have changed this tick, there is no
-    full rescan. Control connections: same rule over control_write_qs_status
-    (Control_write's postcondition). Acceptor: EPOLLIN disarmed when no more
-    connections can be admitted (should_stop_accepting), rearmed once a close
-    frees a slot; only player closes ( @p m_close_fds ) free player slots.
+    full rescan. Acceptor: EPOLLIN disarmed when no more connections can be
+    admitted (should_stop_accepting), rearmed once a close frees a slot; only
+    player closes ( @p m_close_fds ) free player slots. The control connection
+    is a singleton and goes through Epoll_set_interest instead.
 
     @pre No fd in @p write_qs_status is in @p m_close_fds
-    @pre No fd in @p control_write_qs_status is in @p m_control_close_fds
 */
 void Epoll_sync_interest(
     EpollData* data,
     const Vec_WriterQueueStatusEntry* write_qs_status,
     const SparseSet_bool* m_close_fds,
-    const Vec_WriterQueueStatusEntry* control_write_qs_status,
-    const SparseSet_bool* m_control_close_fds,
     Fd acceptor_fd,
     bool should_stop_accepting
 );

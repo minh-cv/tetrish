@@ -2,23 +2,18 @@
 #define TETRISH_TETRISD_CONTROL_H
 
 #include "type.h"
-#include <time.h>
 
-#define CONTROL_MAX_CONNS 2u
-
-typedef enum {
-    CONTROL_CONN_READING,
-    CONTROL_CONN_RESPONDING,
-} ControlConnState;
-
+/*!
+    @invariant @c shutdown_requested is acted on only once the write queue has
+    drained, so a shutdown that could not be acknowledged is not performed.
+*/
 typedef struct {
-    Fd fd; // -1 = slot free
+    Fd fd; // -1 = no connection
     Reader reader;
     Writer writer;
     ReaderFrameQueue read_q;
     WriterFrameQueue write_q;
-    ControlConnState state;
-    bool shutdown_on_teardown;
+    bool shutdown_requested;
 } ControlConn;
 
 /*!
@@ -29,37 +24,33 @@ typedef struct {
 typedef struct {
     size_t players_connected;
     size_t players_authed;
+    size_t players_capacity;
     size_t fds_used;
     size_t fds_capacity;
     int listen_port;
 } ControlStatusSnapshot;
 
 /*!
-    The admin control plane: a Unix-domain listener plus a fixed array of at
-    most CONTROL_MAX_CONNS connections, each serving exactly one framed HTTTP
-    request before being closed. A single-purpose component in the sense of
-    docs/tetrisd/layers.md: it follows the layer lifecycle naming without the
-    per-fd sparse-set structure.
+    The admin control plane: a Unix-domain listener plus at most one connection,
+    which is read like a player's — any number of framed HTTTP requests, one
+    response each, until the peer closes. A single-purpose component in the
+    sense of docs/tetrisd/layers.md: it follows the layer lifecycle naming
+    without the per-fd sparse-set structure, and since it holds one connection
+    it reports readiness through EpollSignals rather than through fd lists.
 
-    @invariant A slot in @c conns is live iff its @c fd is not `-1`, and then
-    its reader/writer and read_q/write_q are initialized.
-    @invariant Connection fds are closed by the epoll layer (like player fds);
+    @invariant @c conn is live iff its @c fd is not `-1`, and then its
+    reader/writer and read_q/write_q are initialized.
+    @invariant The connection fd is closed by the epoll layer (like player fds);
     @c listen_fd stays owned here.
 */
 typedef struct {
     Fd listen_fd;
     const char* ipc_path; // non-owning view into cfg.control_ipc; cfg outlives this layer
-    ControlConn conns[CONTROL_MAX_CONNS];
-    Vec_Fd accepted;
-    Vec_Fd conns_reading;
-    Vec_Fd conns_writing;
-    Vec_WriterQueueStatusEntry write_qs_status;
-    struct timespec start_time;
+    ControlConn conn;
 } ControlData;
 
 /*!
-    @brief Bind and listen on the control socket at @p control_ipc and allocate
-    the per-tick collections.
+    @brief Bind and listen on the control socket at @p control_ipc .
 
     A stale socket file from a previous run is unlinked first. The socket file
     is created with mode 0600 regardless of the process umask (daemonization
@@ -74,67 +65,85 @@ int Control_init(ControlData* data, const char* control_ipc);
 /*!
     @brief Release all resources and unlink the socket path.
 
-    @pre live connection fds have been (or will be) closed by the epoll layer
+    @pre a live connection fd has been (or will be) closed by the epoll layer
 */
 void Control_free(ControlData* data);
 
 /*!
-    @brief tick-end reset of the per-tick vectors; drops read_q leftovers.
+    @brief tick-end reset; reclaims the read_q.
 
-    The front frame was consumed in place by Control_process() this tick; any
-    frame behind it violates one-request-per-connection and is dropped with it.
+    Control_process() consumes its frames in place rather than popping them, so
+    this is where they are freed.
 */
 void Control_reset(ControlData* data);
 
 /*!
-    @brief accept(2) until EAGAIN, initializing a slot per connection and
-    pushing its fd to @p m_accepted_out for epoll registration.
+    @brief accept(2) until EAGAIN, keeping at most one connection.
 
-    Busy policy: when no slot is free, or the fd does not fit the epoll table
-    ( @p fd_capacity ), the connection is closed immediately and the client
-    sees EOF.
+    Admission can fail, and nothing in the kernel guarantees otherwise: accept
+    hands back the lowest free fd number, which is only below @p fd_capacity
+    (cfg.max_fds) while enough of the table is unused. The gap between
+    cfg.max_player_fd and cfg.max_fds is what reserves that room, and it is the
+    operator's to configure — set them equal and control accepts fail as soon
+    as players fill the table.
+
+    Every non-admission closes the incoming fd immediately, so that client sees
+    EOF: a connection is already held, the fd is out of table range, or the
+    slot could not be initialized.
+
+    @post an admitted connection has both queues at capacity 1, so it carries
+          one request in flight per tick and Control_process's response always
+          fits.
+
+    @return the accepted fd for the caller to register with epoll, or `-1` if
+            no connection was admitted this call
 */
-void Control_accept(ControlData* data, size_t fd_capacity, Vec_Fd* m_accepted_out);
+Fd Control_accept(ControlData* data, size_t fd_capacity);
 
 /*!
-    @brief One read pass over every fd in @p m_conns_reading , appending
-    complete frames to the slot's read_q and marking dead fds in
-    @p m_close_fds .
+    @brief One read pass over the live connection, appending complete frames to
+    its read_q and marking a dead fd in @p m_close_fds .
 
-    @note fds already in @p m_close_fds are skipped.
+    EOF fails the fd, as it does for players: a peer that closes mid-request
+    loses whatever it had queued.
+
+    @note an fd already in @p m_close_fds is skipped.
 */
-void Control_read(ControlData* data, const Vec_Fd* m_conns_reading, SparseSet_bool* m_close_fds);
+void Control_read(ControlData* data, SparseSet_bool* m_close_fds);
 
 /*!
-    @brief Serve the front read_q frame of every live CONTROL_CONN_READING
-    connection: parse it as HTTTP, route it, and stage exactly one serialized
-    response frame into the slot's write_q.
+    @brief Serve every frame in read_q: parse it as HTTTP, route it, and stage
+    one serialized response per request into write_q.
 
     A shutdown request only takes effect after its response is flushed:
-    Control_write() marks the fd for close once drained, and Control_close()
-    applies the stop flag (respond-then-act).
+    Control_write() acts on @c shutdown_requested once the queue drains
+    (respond-then-act).
 
-    @post a served connection is in CONTROL_CONN_RESPONDING; an operation
-    failure (allocation) marks the fd in @p m_close_fds instead.
+    @pre read_q and write_q have the same capacity, so the
+         one-response-per-request output always fits what has not yet drained
+    @post an operation failure (allocation, or a write_q that the previous
+          tick's backlog left full) marks the fd in @p m_close_fds
 */
 void Control_process(ControlData* data, const ControlStatusSnapshot* snapshot, SparseSet_bool* m_close_fds);
 
 /*!
-    @brief Drain every live connection's write_q (readiness-independent, like
-    PlayerIo_write), then either mark the fd in @p m_close_fds (response fully
-    flushed, or socket error) or append its queue status to
-    @p m_write_qs_status for interest sync.
+    @brief Drain the connection's write_q (readiness-independent, like
+    PlayerIo_write).
 
-    @post no fd appears both in @p m_close_fds and in @p m_write_qs_status
-    (Epoll_sync_interest precondition)
+    @post a socket failure marks the fd in @p m_close_fds ; a queue that
+          drained with @c shutdown_requested set stops the main loop.
 */
-void Control_write(ControlData* data, SparseSet_bool* m_close_fds, Vec_WriterQueueStatusEntry* m_write_qs_status);
+void Control_write(ControlData* data, SparseSet_bool* m_close_fds);
 
 /*!
-    @brief Free the slot of every fd in @p m_close_fds , applying a pending
-    shutdown_on_teardown (sets @c running to 0).
+    @brief whether EPOLLOUT should be armed on the connection
+*/
+bool Control_wants_write(const ControlData* data);
 
-    @note does not close(2) the fds; Epoll_close() owns that, as for players.
+/*!
+    @brief Free the connection if its fd is in @p m_close_fds .
+
+    @note does not close(2) the fd; Epoll_close() owns that, as for players.
 */
 void Control_close(ControlData* data, const SparseSet_bool* m_close_fds);
 

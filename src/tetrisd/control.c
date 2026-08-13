@@ -15,9 +15,8 @@
 #include <sys/un.h>
 #include <unistd.h>
 
-// one request plus one pipelined extra the reader may complete before the
-// close lands; only the front frame is ever served
-#define CONTROL_QUEUE_CAP 2u
+// one request in flight per tick; the connection stays open for the next
+#define CONTROL_QUEUE_CAP 1u
 
 static void close_ptr(int* fd) {
     close(*fd);
@@ -31,7 +30,6 @@ static void unlink_path(char* path) {
 
 static DTOR_WRAPPER_DEFINE(close_ptr)
 static DTOR_WRAPPER_DEFINE(unlink_path)
-static DTOR_WRAPPER_DEFINE(Vec_Fd_free)
 
 /*!
     @see writer_queue_drain (player_io.c) — intentional duplicate
@@ -58,16 +56,7 @@ static void reader_queue_drain(ReaderFrameQueue* q) {
     }
 }
 
-static ControlConn* conn_slot_at(ControlData* data, Fd fd) {
-    for (size_t i = 0; i < CONTROL_MAX_CONNS; i++) {
-        if (data->conns[i].fd == fd) {
-            return &data->conns[i];
-        }
-    }
-    return NULL;
-}
-
-static int conn_slot_init(ControlConn* conn, Fd fd) {
+static int conn_init(ControlConn* conn, Fd fd) {
     if (ReaderFrameQueue_init(&conn->read_q, CONTROL_QUEUE_CAP) == -1) {
         return -1;
     }
@@ -77,13 +66,12 @@ static int conn_slot_init(ControlConn* conn, Fd fd) {
     }
     reader_init(&conn->reader);
     writer_init(&conn->writer);
-    conn->state = CONTROL_CONN_READING;
-    conn->shutdown_on_teardown = false;
+    conn->shutdown_requested = false;
     conn->fd = fd;
     return 0;
 }
 
-static void conn_slot_free(ControlConn* conn) {
+static void conn_free(ControlConn* conn) {
     reader_free(&conn->reader);
     writer_free(&conn->writer);
     reader_queue_drain(&conn->read_q);
@@ -142,78 +130,48 @@ int Control_init(ControlData* data, const char* control_ipc) {
         DTOR_ERR_RETURN(errdtor, dtor, -1);
     }
 
-    if (Vec_Fd_init(&data->accepted, CONTROL_MAX_CONNS) == -1) {
-        DTOR_ERR_RETURN(errdtor, dtor, -1);
-    }
-    DTOR_INSERT(errdtor, Vec_Fd_free, &data->accepted);
-
-    if (Vec_Fd_init(&data->conns_reading, CONTROL_MAX_CONNS) == -1) {
-        DTOR_ERR_RETURN(errdtor, dtor, -1);
-    }
-    DTOR_INSERT(errdtor, Vec_Fd_free, &data->conns_reading);
-
-    if (Vec_Fd_init(&data->conns_writing, CONTROL_MAX_CONNS) == -1) {
-        DTOR_ERR_RETURN(errdtor, dtor, -1);
-    }
-    DTOR_INSERT(errdtor, Vec_Fd_free, &data->conns_writing);
-
-    if (Vec_WriterQueueStatusEntry_init(&data->write_qs_status, CONTROL_MAX_CONNS) == -1) {
-        DTOR_ERR_RETURN(errdtor, dtor, -1);
-    }
-
-    for (size_t i = 0; i < CONTROL_MAX_CONNS; i++) {
-        data->conns[i].fd = -1;
-    }
-    clock_gettime(CLOCK_MONOTONIC, &data->start_time);
+    data->conn.fd = -1;
     data->listen_fd = listen_fd;
     data->ipc_path = control_ipc;
     DTOR_RETURN(dtor, 0);
 }
 
 void Control_free(ControlData* data) {
-    for (size_t i = 0; i < CONTROL_MAX_CONNS; i++) {
-        if (data->conns[i].fd != -1) {
-            conn_slot_free(&data->conns[i]);
-        }
+    if (data->conn.fd != -1) {
+        conn_free(&data->conn);
     }
     close(data->listen_fd);
     data->listen_fd = -1;
     unlink_path((char*)data->ipc_path);
-    Vec_WriterQueueStatusEntry_free(&data->write_qs_status);
-    Vec_Fd_free(&data->conns_writing);
-    Vec_Fd_free(&data->conns_reading);
-    Vec_Fd_free(&data->accepted);
 }
 
 void Control_reset(ControlData* data) {
-    for (size_t i = 0; i < CONTROL_MAX_CONNS; i++) {
-        if (data->conns[i].fd != -1) {
-            reader_queue_drain(&data->conns[i].read_q);
-        }
+    if (data->conn.fd != -1) {
+        reader_queue_drain(&data->conn.read_q);
     }
-    Vec_Fd_reset(&data->accepted);
-    Vec_Fd_reset(&data->conns_reading);
-    Vec_Fd_reset(&data->conns_writing);
-    Vec_WriterQueueStatusEntry_reset(&data->write_qs_status);
 }
 
-void Control_accept(ControlData* data, size_t fd_capacity, Vec_Fd* m_accepted_out) {
+Fd Control_accept(ControlData* data, size_t fd_capacity) {
+    Fd accepted = -1;
     for (;;) {
         const int fd = accept(data->listen_fd, NULL, NULL);
         if (fd == -1) {
             if (errno == EAGAIN || errno == EWOULDBLOCK) {
-                return;
+                return accepted;
             }
             if (errno == EINTR || errno == ECONNABORTED) {
                 continue;
             }
             LOGGER_PERROR("control", "accept");
-            return;
+            return accepted;
         }
 
-        ControlConn* conn = conn_slot_at(data, -1);
-        if (conn == NULL || (size_t)fd >= fd_capacity) {
-            // busy policy: close immediately, the client sees EOF
+        if (data->conn.fd != -1 || accepted != -1) {
+            close(fd);
+            continue;
+        }
+        if ((size_t)fd >= fd_capacity) {
+            LOGGER_LOG(LOG_WARN, "control", "fd=%d is out of the epoll table, dropping", fd);
             close(fd);
             continue;
         }
@@ -222,46 +180,33 @@ void Control_accept(ControlData* data, size_t fd_capacity, Vec_Fd* m_accepted_ou
             close(fd);
             continue;
         }
-        if (conn_slot_init(conn, fd) == -1) {
+        if (conn_init(&data->conn, fd) == -1) {
             close(fd);
             continue;
         }
-        const int err = Vec_Fd_push_back(m_accepted_out, &conn->fd);
-        assert(err != -1);
-        (void)err;
+        accepted = fd;
     }
 }
 
-void Control_read(ControlData* data, const Vec_Fd* m_conns_reading, SparseSet_bool* m_close_fds) {
-    for (size_t i = 0; i < Vec_Fd_size(m_conns_reading); i++) {
-        const Fd fd = *Vec_Fd_at(m_conns_reading, i);
-        if (SparseSet_bool_contains(m_close_fds, (size_t)fd)) {
-            continue;
-        }
-        ControlConn* conn = conn_slot_at(data, fd);
-        if (conn == NULL) {
-            assert(false && "polled control fd must have a slot");
-            continue;
-        }
-        if (reader_recv(&conn->reader, fd, &conn->read_q) == -1) {
-            *SparseSet_bool_activate(m_close_fds, (size_t)fd) = true;
-        }
+void Control_read(ControlData* data, SparseSet_bool* m_close_fds) {
+    ControlConn* conn = &data->conn;
+    if (conn->fd == -1 || SparseSet_bool_contains(m_close_fds, (size_t)conn->fd)) {
+        return;
+    }
+    if (reader_recv(&conn->reader, conn->fd, &conn->read_q) == -1) {
+        *SparseSet_bool_activate(m_close_fds, (size_t)conn->fd) = true;
     }
 }
 
-static int build_status_body(const ControlData* data, const ControlStatusSnapshot* snapshot,
+static int build_status_body(const ControlStatusSnapshot* snapshot,
                              char* buf, size_t buf_size, size_t* out_len) {
-    struct timespec now;
-    clock_gettime(CLOCK_MONOTONIC, &now);
-    const long long uptime_s = (long long)now.tv_sec - (long long)data->start_time.tv_sec;
-
     const int written = snprintf(buf, buf_size,
-        "{\"pid\":%ld,\"uptime_s\":%lld,\"players_connected\":%zu,"
-        "\"players_authed\":%zu,\"fds_used\":%zu,\"fds_capacity\":%zu,"
-        "\"listen_port\":%d}",
-        (long)getpid(), uptime_s, snapshot->players_connected,
-        snapshot->players_authed, snapshot->fds_used, snapshot->fds_capacity,
-        snapshot->listen_port);
+        "{\"pid\":%ld,\"players_connected\":%zu,"
+        "\"players_authed\":%zu,\"players_capacity\":%zu,"
+        "\"fds_used\":%zu,\"fds_capacity\":%zu,\"listen_port\":%d}",
+        (long)getpid(), snapshot->players_connected,
+        snapshot->players_authed, snapshot->players_capacity,
+        snapshot->fds_used, snapshot->fds_capacity, snapshot->listen_port);
     if (written < 0 || (size_t)written >= buf_size) {
         return -1;
     }
@@ -269,9 +214,8 @@ static int build_status_body(const ControlData* data, const ControlStatusSnapsho
     return 0;
 }
 
-static int process_one(ControlData* data, ControlConn* conn, const ControlStatusSnapshot* snapshot) {
-    ReaderFrame* frame = ReaderFrameQueue_front(&conn->read_q);
-
+static int process_one(ControlConn* conn, const ReaderFrame* frame,
+                       const ControlStatusSnapshot* snapshot) {
     HtttpStatus status = HTTTP_STATUS_BAD_REQUEST;
     char status_body[512];
     const char* body = NULL;
@@ -286,7 +230,7 @@ static int process_one(ControlData* data, ControlConn* conn, const ControlStatus
             if (strcmp(parsed.request.method, "GET") != 0) {
                 status = HTTTP_STATUS_METHOD_NOT_ALLOWED;
             }
-            else if (build_status_body(data, snapshot, status_body,
+            else if (build_status_body(snapshot, status_body,
                                        sizeof(status_body), &body_len) == -1) {
                 return -1;
             }
@@ -342,96 +286,70 @@ static int process_one(ControlData* data, ControlConn* conn, const ControlStatus
     }
 
     const WriterFrame out = { serialized, serialized_len };
-    const int err = WriterFrameQueue_push_back(&conn->write_q, &out);
-    assert(err != -1 && "at most one response is ever staged per connection");
-    (void)err;
+    if (WriterFrameQueue_push_back(&conn->write_q, &out) == -1) {
+        free(serialized);
+        return -1;
+    }
 
     // only honored once the response is staged, so a failed allocation above
     // reads as "busy" to the client instead of killing the daemon silently
-    conn->shutdown_on_teardown = shutdown_requested;
-    conn->state = CONTROL_CONN_RESPONDING;
+    if (shutdown_requested) {
+        conn->shutdown_requested = true;
+    }
     return 0;
 }
 
 void Control_process(ControlData* data, const ControlStatusSnapshot* snapshot, SparseSet_bool* m_close_fds) {
-    for (size_t i = 0; i < CONTROL_MAX_CONNS; i++) {
-        ControlConn* conn = &data->conns[i];
-        if (conn->fd == -1 || conn->state != CONTROL_CONN_READING) {
-            continue;
-        }
-        if (SparseSet_bool_contains(m_close_fds, (size_t)conn->fd)) {
-            continue;
-        }
-        if (ReaderFrameQueue_size(&conn->read_q) == 0) {
-            continue;
-        }
-        if (process_one(data, conn, snapshot) == -1) {
+    ControlConn* conn = &data->conn;
+    if (conn->fd == -1 || SparseSet_bool_contains(m_close_fds, (size_t)conn->fd)) {
+        return;
+    }
+
+    const size_t count = ReaderFrameQueue_size(&conn->read_q);
+    for (size_t i = 0; i < count; i++) {
+        const ReaderFrame* frame = ReaderFrameQueue_at(&conn->read_q, i);
+        if (process_one(conn, frame, snapshot) == -1) {
             *SparseSet_bool_activate(m_close_fds, (size_t)conn->fd) = true;
+            return;
         }
     }
 }
 
-void Control_write(ControlData* data, SparseSet_bool* m_close_fds, Vec_WriterQueueStatusEntry* m_write_qs_status) {
-    for (size_t i = 0; i < CONTROL_MAX_CONNS; i++) {
-        ControlConn* conn = &data->conns[i];
-        if (conn->fd == -1) {
-            continue;
-        }
-        const size_t fd = (size_t)conn->fd;
-        if (SparseSet_bool_contains(m_close_fds, fd)) {
-            continue; // close reclaims whatever the queue still holds
-        }
+bool Control_wants_write(const ControlData* data) {
+    return data->conn.fd != -1 &&
+           (WriterFrameQueue_size(&data->conn.write_q) > 0 ||
+            data->conn.writer.state != WRITER_IDLE);
+}
 
-        const bool has_pending = WriterFrameQueue_size(&conn->write_q) > 0 ||
-                                 conn->writer.state != WRITER_IDLE;
-        if (!has_pending) {
-            if (conn->state == CONTROL_CONN_RESPONDING) {
-                // unreachable today (a drained response closes below), kept so
-                // a responding slot can never leak
-                *SparseSet_bool_activate(m_close_fds, fd) = true;
-            }
-            continue;
-        }
+void Control_write(ControlData* data, SparseSet_bool* m_close_fds) {
+    ControlConn* conn = &data->conn;
+    if (conn->fd == -1) {
+        return;
+    }
+    const size_t fd = (size_t)conn->fd;
+    if (SparseSet_bool_contains(m_close_fds, fd)) {
+        return; // close reclaims whatever the queue still holds
+    }
+    if (!Control_wants_write(data)) {
+        return;
+    }
 
-        if (writer_send(&conn->writer, conn->fd, &conn->write_q) == -1) {
-            writer_queue_drain(&conn->write_q);
-            *SparseSet_bool_activate(m_close_fds, fd) = true;
-            continue;
-        }
+    if (writer_send(&conn->writer, conn->fd, &conn->write_q) == -1) {
+        writer_queue_drain(&conn->write_q);
+        *SparseSet_bool_activate(m_close_fds, fd) = true;
+        return;
+    }
 
-        const bool drained = WriterFrameQueue_size(&conn->write_q) == 0 &&
-                             conn->writer.state == WRITER_IDLE;
-        if (drained) {
-            assert(conn->state == CONTROL_CONN_RESPONDING);
-            // graceful close once the response is flushed; no status entry —
-            // Epoll_sync_interest forbids close-set fds in the status list
-            *SparseSet_bool_activate(m_close_fds, fd) = true;
-            continue;
-        }
-
-        const WriterQueueStatusEntry status = {
-            conn->fd,
-            WriterFrameQueue_size(&conn->write_q) == WriterFrameQueue_capacity(&conn->write_q)
-                ? WRITER_QUEUE_FULL
-                : WRITER_QUEUE_NORMAL,
-        };
-        const int err = Vec_WriterQueueStatusEntry_push_back(m_write_qs_status, &status);
-        assert(err != -1);
-        (void)err;
+    if (conn->shutdown_requested && !Control_wants_write(data)) {
+        LOGGER_LOG(LOG_INFO, "control", "shutdown requested over the control channel");
+        running = 0;
     }
 }
 
 void Control_close(ControlData* data, const SparseSet_bool* m_close_fds) {
-    for (size_t i = 0; i < SparseSet_bool_size(m_close_fds); i++) {
-        const Fd fd = (Fd)SparseSet_bool_key_at_idx(m_close_fds, i);
-        ControlConn* conn = conn_slot_at(data, fd);
-        if (conn == NULL) {
-            continue;
-        }
-        if (conn->shutdown_on_teardown) {
-            LOGGER_LOG(LOG_INFO, "control", "shutdown requested over the control channel");
-            running = 0;
-        }
-        conn_slot_free(conn);
+    ControlConn* conn = &data->conn;
+    if (conn->fd == -1 || !SparseSet_bool_contains(m_close_fds, (size_t)conn->fd)) {
+        return;
     }
+    conn_free(conn);
 }
