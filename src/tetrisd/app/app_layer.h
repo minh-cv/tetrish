@@ -1,7 +1,6 @@
 #ifndef TETRISH_TETRISD_APP_LAYER_H
 #define TETRISH_TETRISD_APP_LAYER_H
 
-#include "app/garbage_event.h"
 #include "htttp_layer.h"
 #include "tetrisbrain/input.h"
 #include "tetrisbrain/rng.h"
@@ -150,13 +149,18 @@ typedef struct {
     size_t max_players_per_room;
 
     /*!
-        @brief per-tick output: the attacks the tick's line clears produced
+        @brief scratch for the tick: the seats holding an attack to deliver
 
-        Consumed by the garbage queue after the tick and reclaimed by
-        AppData_reset. Sized one event per seat, the most one tick can
-        produce.
+        Scratch rather than state — AppData_room_tick fills it and drains it
+        within the one call, so it is empty everywhere else, and no close can
+        land between the two. That is what makes an fd a safe handle here:
+        the seat it names cannot be freed or reused before the attack is
+        routed, so nothing needs a generation counter.
+
+        A player sits in one seat and banks at most one attack per tick, so
+        the fd space is the bound and the set is sized like @c players .
     */
-    Vec_GarbageEvent garbage_events;
+    SparseSet_bool garbage_pending;
 
     //! @brief routing randomness; never a game's RNG, which its seed owns
     Rng garbage_rng;
@@ -293,6 +297,19 @@ void AppData_respond(
     than as a message of its own. A room with nobody left alive ends the
     same way, dropping back to @c ROOM_LOBBY .
 
+    Garbage is produced and delivered inside this one call, in three phases:
+    every running room takes its frames, then every attack those frames
+    banked is routed, then the snapshots go out. Routing after all the
+    frames rather than after each room's is what keeps a cross-room target
+    from depending on which room the iteration reached first, and it puts
+    the arriving garbage in the same snapshot as the move that earned it.
+    A room whose game ended during its frames sends nothing and is
+    snapshotted before the routing phase, its boards being final either way.
+
+    An attack with no living target is dropped rather than banked: a
+    stockpile that fires at whoever joins next is not a game rule anyone
+    asked for.
+
     @pre  No room of @c in_game_rooms has a member outside @c players
     @pre  Every fd of @c players has a slot in @p m_response_qs (both are
           initialized at accept, see server_tick's accept fan-out)
@@ -325,30 +342,7 @@ void AppData_room_tick(
     AppData* data,
     uint64_t expirations,
     SparseSet_HtttpOutboundMessageQueue* m_response_qs,
-    Vec_GarbageEvent* m_garbage_events,
     SparseSet_bool* err_fds
 );
-
-/*!
-    @brief route each attack of @p events to a board and queue its rows
-           there
-
-    Routing happens here, at delivery: a same-room attack hits a random
-    living opponent in the source room, a cross-room attack hits a random
-    living member of a *different* room that also opted into cross-room
-    garbage. An attack with no such target, or whose version is not
-    @c GARBAGE_EVENT_VERSION , is dropped and counted; garbage is a
-    best-effort attack, not guaranteed delivery.
-
-    The rows land through the game's own intake: they surface on the
-    target's board at their next spawn.
-
-    @post @c garbage_injected and @c garbage_dropped_no_target have grown
-          by the delivered and dropped counts
-*/
-void AppData_apply_garbage(AppData* data, const Vec_GarbageEvent* events);
-
-//! @brief return per-tick output state to empty; part of the tick's reset fan-out
-void AppData_reset(AppData* data);
 
 #endif

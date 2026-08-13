@@ -13,7 +13,6 @@ typedef enum {
     EPOLL_ENTRY_CONTROL,
     EPOLL_ENTRY_CONTROL_LISTENER,
     EPOLL_ENTRY_ACCEPTOR,
-    EPOLL_ENTRY_GARBAGE_MQ,
 } EpollEntryType;
 
 typedef struct {
@@ -53,7 +52,6 @@ typedef struct {
     bool logger_hangup;
     bool logger_timer_expired;
     bool room_timer_expired;
-    bool garbage_readable;
 } EpollSignals;
 
 // takes ownership of epoll_fd; player and control-connection fds are closed by
