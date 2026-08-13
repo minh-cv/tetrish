@@ -5,6 +5,7 @@
 #include "libs/shell.h"
 #include "cmdline.h"
 #include <assert.h>
+#include <ctype.h>
 #include <errno.h>
 #include <stddef.h>
 #include <stdint.h>
@@ -180,6 +181,12 @@ ReadCommandResult read_command_from_file(FILE* file, char*** out_argv, size_t* o
         }
         return READ_COMMAND_END;
     }
+
+    // a line whose first non-blank character is `#` is a comment; dropping it
+    // here leaves an empty command, which the caller already skips.
+    char* first = line;
+    while (isspace((unsigned char)*first)) first++;
+    if (*first == '#') *first = '\0';
 
     char** argv;
     CmdlineResult parse_result = cmdline_parse(line, &argv, out_argc);

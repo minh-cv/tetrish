@@ -99,7 +99,9 @@ void Acceptor_accept(Acceptor* data, size_t m_fd_limit, Vec_Fd* m_accepted_out, 
 
         int opt = 1;
         if (setsockopt(fd, IPPROTO_TCP, TCP_NODELAY, &opt, sizeof(opt)) == -1) {
-
+            LOGGER_PERROR("acceptor", "setsockopt TCP_NODELAY");
+            close(fd);
+            continue;
         }
 
 

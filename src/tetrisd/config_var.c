@@ -45,7 +45,6 @@ int config_var_init(struct config_var* cfg_var) {
         DTOR_ERR_RETURN(errdtor, dtor, -1);
     }
     
-    static const int LISTEN_PORT_DEFAULT = 4321;
     static const char* const ADDRESS_DEFAULT = "localhost";
     static const unsigned int MAX_EVENTS_DEFAULT = 64;
     static const unsigned int MAX_FDS_DEFAULT = 1024;
@@ -53,6 +52,9 @@ int config_var_init(struct config_var* cfg_var) {
     static const unsigned int MAX_ROOMS_DEFAULT = 512;
     static const unsigned int MAX_PLAYERS_PER_ROOM_DEFAULT = 8;
     static const unsigned int ROOM_TICK_HZ_DEFAULT = 60;
+    // spec_from_hz computes the period as NS_PER_S / tick_hz, so a higher rate
+    // truncates to a zero period, which timerfd_settime reads as "disarm"
+    static const unsigned int ROOM_TICK_HZ_MAX = 1000000000;
     static const unsigned int LOGGER_RECONNECT_SECONDS_DEFAULT = 5;
     static const unsigned int LOGGER_CAPACITY_DEFAULT = 512;
     static const unsigned int CLIENT_CAPACITY_DEFAULT = 8;
@@ -76,7 +78,8 @@ int config_var_init(struct config_var* cfg_var) {
 
     long listen_port_long;
     if (config_get_long_arg(&config, "listen_port", &listen_port_long) == -1) {
-        listen_port_long = LISTEN_PORT_DEFAULT;
+        fprintf(stderr, "listen_port missing\n");
+        DTOR_ERR_RETURN(errdtor, dtor, -1);
     }
     if (listen_port_long > UINT16_MAX || listen_port_long <= 0) {
         fprintf(stderr, "listen_port invalid\n");
@@ -148,6 +151,13 @@ int config_var_init(struct config_var* cfg_var) {
 
     unsigned int room_tick_hz;
     if (config_get_uint_arg(&config, "tetrisd_room_tick_hz", ROOM_TICK_HZ_DEFAULT, 1, &room_tick_hz) == -1) {
+        DTOR_ERR_RETURN(errdtor, dtor, -1);
+    }
+    // rejected here rather than at RoomTimer_init, where a zero period is
+    // indistinguishable from a deliberate disarm: the clock would come up
+    // "successfully", never fire, and freeze every in-game room silently
+    if (room_tick_hz > ROOM_TICK_HZ_MAX) {
+        fprintf(stderr, "tetrisd_room_tick_hz invalid (maximum %u)\n", ROOM_TICK_HZ_MAX);
         DTOR_ERR_RETURN(errdtor, dtor, -1);
     }
 

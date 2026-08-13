@@ -28,8 +28,9 @@ typedef struct {
 /*!
     @brief Create the timerfd and arm it at @p tick_hz .
 
-    @pre @p tick_hz is nonzero (config_var enforces a minimum of 1); zero would
-         disarm the timer rather than slow it
+    @pre @p tick_hz is nonzero and at most one tick per nanosecond (config_var
+         enforces both bounds); zero would disarm the timer rather than slow it,
+         and a higher rate truncates the period to zero, which disarms it too
     @post the fd is nonblocking and not yet registered with epoll
 */
 int RoomTimer_init(RoomTimer* data, unsigned int tick_hz);
@@ -49,7 +50,8 @@ void RoomTimer_free(RoomTimer* data);
     the call, so the tick following a reload can be short or long by up to one
     period.
 
-    @pre @p tick_hz is nonzero, as in RoomTimer_init()
+    @pre @p tick_hz is nonzero and at most one tick per nanosecond, as in
+         RoomTimer_init()
     @post on failure the previous rate stays armed and the caller keeps the
           running config, so a bad reload cannot stop the clock
     @return `0` on success, `-1` on failure

@@ -3,9 +3,9 @@
 #include "tetrisbrain/control.h"
 #include "tetrisbrain/state.h"
 #include <assert.h>
+#include <openssl/rand.h>
 #include <stdbool.h>
 #include <string.h>
-#include <time.h>
 
 RoomConfig room_config_default(void) {
     const RoomConfig config = {
@@ -108,16 +108,37 @@ RoomJoinResult room_join(AppData* data, Fd fd, size_t room_idx) {
     return ROOM_JOIN_OK;
 }
 
-void room_start(AppData* data, size_t room_idx) {
+int room_start(AppData* data, size_t room_idx) {
     assert(SparseSet_Room_contains(&data->rooms, room_idx));
 
     Room* room = SparseSet_Room_get(&data->rooms, room_idx);
-    const uint64_t room_seed = (uint64_t)time(NULL) ^ (uint64_t)room_idx * 0x9e3779b97f4a7c15ULL;
+    /*
+        A seed fixes the entire piece sequence and every garbage hole column,
+        so it has to be unguessable: anything derived from the clock is
+        brute-forceable from the server time alone. Nothing here falls back to
+        a weaker source, and no seed is ever logged.
+
+        shared_seed hands one draw to every member, the fairness rule in versus
+        play. Members that draw their own sequences each get their own draw
+        rather than a mix of the room's: a player can read their own sequence
+        off their board, and deriving the others from it would hand them
+        everyone else's queue.
+    */
+    uint64_t shared_seed = 0;
+    if (room->config.shared_seed &&
+        RAND_bytes((unsigned char*)&shared_seed, sizeof(shared_seed)) != 1) {
+        LOGGER_LOG(LOG_ERROR, "room", "room=%zu cannot start: no secure seed available", room_idx);
+        return -1;
+    }
+
     for (size_t i = 0; i < room->member_count; i++) {
         RoomMember* member = &room->members[i];
-        const uint64_t seed = room->config.shared_seed
-            ? room_seed
-            : room_seed ^ ((uint64_t)member->fd + 1) * 0x9e3779b97f4a7c15ULL;
+        uint64_t seed = shared_seed;
+        if (!room->config.shared_seed &&
+            RAND_bytes((unsigned char*)&seed, sizeof(seed)) != 1) {
+            LOGGER_LOG(LOG_ERROR, "room", "room=%zu cannot start: no secure seed available", room_idx);
+            return -1;
+        }
         member->game = init_state(seed, &room->config.brain);
         const bool is_topped_out = apply_spawn(&member->game);
         assert(!is_topped_out && "an empty board cannot block the first piece");
@@ -129,8 +150,9 @@ void room_start(AppData* data, size_t room_idx) {
     room->started_member_count = room->member_count;
     room->status = ROOM_IN_GAME;
     *SparseSet_bool_activate(&data->in_game_rooms, room_idx) = true;
-    LOGGER_LOG(LOG_INFO, "room", "room=%zu game started with %zu members, seed=%llu",
-               room_idx, room->member_count, (unsigned long long)room_seed);
+    LOGGER_LOG(LOG_INFO, "room", "room=%zu game started with %zu members",
+               room_idx, room->member_count);
+    return 0;
 }
 
 void room_tick(AppData* data, size_t room_idx) {

@@ -9,6 +9,8 @@
 #include <stdlib.h>
 #include <string.h>
 #include <sys/socket.h>
+#include <sys/stat.h>
+#include <sys/time.h>
 #include <sys/un.h>
 #include <time.h>
 #include <unistd.h>
@@ -61,6 +63,13 @@ static void* client_thread_main(void* arg_v) {
         unsigned char* frame = tetrish_recv_frame(fd, &frame_length, NULL);
         if (frame == NULL) {
             break;
+        }
+
+        // fwrite(_, 0, 1, _) returns 0, which the check below would read as a
+        // write failure and use to tear down a healthy connection
+        if (frame_length == 0) {
+            free(frame);
+            continue;
         }
 
         pthread_mutex_lock(&ctx->out_file_mu);
@@ -117,19 +126,22 @@ static DTOR_WRAPPER_DEFINE(mutex_destroy_ptr)
 
 static int prepare_socket(const char* path, int backlog) {
     DTOR_DEFINE(dtor, 10);
+    DTOR_DEFINE(errdtor, 10);
 
     struct sockaddr_un addr;
     if (strlen(path) >= sizeof(addr.sun_path)) {
         fprintf(stderr, "log_ipc path too long: %s\n", path);
-        DTOR_RETURN(dtor, -1);
+        DTOR_ERR_RETURN(errdtor, dtor, -1);
     }
 
     int listen_fd = socket(AF_UNIX, SOCK_STREAM, 0);
     if (listen_fd == -1) {
         perror("socket");
-        DTOR_RETURN(dtor, -1);
+        DTOR_ERR_RETURN(errdtor, dtor, -1);
     }
-    DTOR_INSERT(dtor, close_ptr, &listen_fd);
+    // the fd is handed to the caller on success, so it is only closed on the
+    // error paths below
+    DTOR_INSERT(errdtor, close_ptr, &listen_fd);
 
     memset(&addr, 0, sizeof(addr));
     addr.sun_family = AF_UNIX;
@@ -137,20 +149,25 @@ static int prepare_socket(const char* path, int backlog) {
 
     if (unlink(path) == -1 && errno != ENOENT) {
         perror("unlink");
-        DTOR_RETURN(dtor, -1);
+        DTOR_ERR_RETURN(errdtor, dtor, -1);
     }
 
-    if (bind(listen_fd, (struct sockaddr *)&addr, sizeof(addr)) == -1) {
+    // incantation() runs umask(0), so scope a restrictive mask over bind: the
+    // socket file's 0600 mode is the log plane's entire auth boundary
+    const mode_t old_umask = umask(S_IXUSR | S_IRWXG | S_IRWXO);
+    const int bind_err = bind(listen_fd, (struct sockaddr *)&addr, sizeof(addr));
+    umask(old_umask);
+    if (bind_err == -1) {
         perror("bind");
-        DTOR_RETURN(dtor, -1);
+        DTOR_ERR_RETURN(errdtor, dtor, -1);
     }
 
     if (listen(listen_fd, backlog) == -1) {
         perror("listen");
-        DTOR_RETURN(dtor, -1);
+        DTOR_ERR_RETURN(errdtor, dtor, -1);
     }
 
-    return listen_fd;
+    DTOR_RETURN(dtor, listen_fd);
 }
 
 int main() {
@@ -286,6 +303,18 @@ int main() {
             continue;
         }
 
+        // tetrish_recv_frame() blocks in recv_all() until the whole frame
+        // arrives; without a receive timeout a client that sends a length
+        // header and then stalls parks its thread forever, and the shutdown
+        // drain below can never see client_count reach zero
+        const struct timeval recv_timeout = { .tv_sec = 5, .tv_usec = 0 };
+        if (setsockopt(client_fd, SOL_SOCKET, SO_RCVTIMEO, &recv_timeout,
+                       sizeof(recv_timeout)) == -1) {
+            perror("setsockopt");
+            close(client_fd);
+            continue;
+        }
+
         pthread_mutex_lock(&ctx.clients_mu);
         bool full = ctx.client_count >= ctx.max_clients;
         if (!full) {
@@ -325,11 +354,13 @@ int main() {
     }
 
     struct timespec drain_ts = { .tv_sec = 0, .tv_nsec = 100 * 1000 * 1000 };
-    for (;;) {
+    bool has_remaining = true;
+    for (int i = 0; i < 50; i++) {
         pthread_mutex_lock(&ctx.clients_mu);
         int remaining = ctx.client_count;
         pthread_mutex_unlock(&ctx.clients_mu);
         if (remaining == 0) {
+            has_remaining = false;
             break;
         }
         nanosleep(&drain_ts, NULL);
@@ -337,8 +368,14 @@ int main() {
 
     if (fflush(out_file) == -1) {
         perror("fflush");
+        if (has_remaining) {
+            _exit(1);
+        }
         DTOR_RETURN(dtor, 1);
     }
 
+    if (has_remaining) {
+        _exit(0);
+    }
     DTOR_RETURN(dtor, 0);
 }

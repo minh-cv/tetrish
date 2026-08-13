@@ -287,7 +287,9 @@ static DispatchResult handle_room_start(AppData* data, Fd fd, HtttpOutboundMessa
         return respond(outbound, HTTTP_STATUS_CONFLICT, "Game already started");
     }
 
-    room_start(data, room_idx);
+    if (room_start(data, room_idx) == -1) {
+        return respond(outbound, HTTTP_STATUS_INTERNAL_SERVER_ERROR, "Cannot start game");
+    }
     return respond(outbound, HTTTP_STATUS_OK, NULL);
 }
 

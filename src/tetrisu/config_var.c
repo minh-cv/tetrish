@@ -26,7 +26,6 @@ int config_var_init(struct config_var* cfg_var) {
     }
     DTOR_INSERT(dtor, free, tetrishrc_path);
 
-    static const int LISTEN_PORT_DEFAULT = 4321;
     static const char* ADDRESS_DEFAULT = "localhost";
 
     Config config;
@@ -39,7 +38,8 @@ int config_var_init(struct config_var* cfg_var) {
 
     long listen_port_long;
     if (config_get_long_arg(&config, "listen_port", &listen_port_long) == -1) {
-        listen_port_long = LISTEN_PORT_DEFAULT;
+        fprintf(stderr, "listen_port missing\n");
+        DTOR_ERR_RETURN(errdtor, dtor, -1);
     }
     if (listen_port_long > UINT16_MAX || listen_port_long <= 0) {
         fprintf(stderr, "listen_port invalid\n");
@@ -61,6 +61,7 @@ int config_var_init(struct config_var* cfg_var) {
     else {
         address = config.argv[address_idx];
         config.argv[address_idx] = NULL;
+        DTOR_INSERT(errdtor, free, address);
     }
 
     char* cert_path = config_get_path(&config, "ca_path", project_dir);
@@ -84,4 +85,6 @@ int config_var_init(struct config_var* cfg_var) {
 void config_var_free(struct config_var* cfg) {
     free(cfg->ca_path);
     free(cfg->address);
+    cfg->ca_path = NULL;
+    cfg->address = NULL;
 }

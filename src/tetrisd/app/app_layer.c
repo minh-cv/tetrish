@@ -369,6 +369,11 @@ void AppData_room_tick(AppData* data, uint64_t expirations,
         return;
     }
 
+    //! TODO: make this configurable instead of hardcoding
+    if (expirations > 5) {
+        expirations = 5;
+    }
+
     for (size_t i = SparseSet_bool_size(&data->in_game_rooms); i-- > 0;) {
         const size_t room_idx = SparseSet_bool_key_at_idx(&data->in_game_rooms, i);
         Room* room = SparseSet_Room_get(&data->rooms, room_idx);

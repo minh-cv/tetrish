@@ -67,14 +67,22 @@ RoomJoinResult room_join(AppData* data, Fd fd, size_t room_idx);
           in play, no member has pending inputs, every member is alive, and
           @p room_idx is in @c in_game_rooms
 
-    @note the boards are seeded from the wall clock and @p room_idx , so a
-          game is not reproducible across runs. This is not part of the
-          contract; a seed the caller supplies would be.
+    @note the boards are seeded from the system CSPRNG, so a game is not
+          reproducible across runs. This is not part of the contract; a seed
+          the caller supplies would be — but it must never be one a client can
+          choose, since the seed fixes the whole piece sequence and every
+          garbage hole column for every member drawing from it.
 
     @note starting an already started room restarts its boards. This is not
           part of the contract.
+
+    @return `0` on success, `-1` if no secure seed is available, in which case
+            the room is not started. A room whose members draw their own
+            sequences may have had the boards of earlier members overwritten
+            before the failure; they are meaningless in @c ROOM_LOBBY , so the
+            room is still startable.
 */
-void room_start(AppData* data, size_t room_idx);
+int room_start(AppData* data, size_t room_idx);
 
 /*!
     @brief advance the game of the room keyed @p room_idx by one frame

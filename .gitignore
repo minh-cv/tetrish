@@ -1,12 +1,8 @@
-bin/
-lib/
 build/
 var/
 auth/*.crt
 !auth/cacsertificate.crt
 auth/*.pem
-*.o
-*.a
 tmp/
 .cache/
 .vscode/
@@ -15,3 +11,5 @@ compile_commands.json
 archive/
 docs/doxygen/
 docs/doxygen_warnings.log
+.claude/
+temp_docs/
