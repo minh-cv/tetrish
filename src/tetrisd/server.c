@@ -17,6 +17,7 @@ static DTOR_WRAPPER_DEFINE(AuthData_free)
 static DTOR_WRAPPER_DEFINE(HtttpData_free)
 static DTOR_WRAPPER_DEFINE(AppData_free)
 static DTOR_WRAPPER_DEFINE(RoomTimer_free)
+static DTOR_WRAPPER_DEFINE(GarbageData_free)
 
 static DTOR_WRAPPER_DEFINE(Control_free)
 
@@ -186,6 +187,18 @@ int server_init(Server* server) {
         DTOR_ERR_RETURN(errdtor, dtor, -1);
     }
 
+    if (GarbageData_init(&server->garbage, &server->cfg) == -1) {
+        DTOR_ERR_RETURN(errdtor, dtor, -1);
+    }
+    DTOR_INSERT(errdtor, GarbageData_free, &server->garbage);
+
+    // an unwatchable garbage queue is fatal for the same reason as the clock:
+    // no attack could ever be delivered without it
+    if (server->garbage.mq < 0 || (size_t)server->garbage.mq >= epoll_capacity) {
+        LOGGER_LOG(LOG_ERROR, "server", "garbage mqd out of table range");
+        DTOR_ERR_RETURN(errdtor, dtor, -1);
+    }
+
     if (Control_init(&server->control, server->cfg.control_ipc) == -1) {
         DTOR_ERR_RETURN(errdtor, dtor, -1);
     }
@@ -208,6 +221,10 @@ int server_init(Server* server) {
         DTOR_ERR_RETURN(errdtor, dtor, -1);
     }
 
+    if (Epoll_accept_one(&server->epoll, (Fd)server->garbage.mq, EPOLL_ENTRY_GARBAGE_MQ, EPOLLIN) == -1) {
+        DTOR_ERR_RETURN(errdtor, dtor, -1);
+    }
+
     // connect and flush what startup logged, rather than waiting for the first
     // epoll_wait to return, which on an idle server can be a long time
     const EpollSignals quiet = {0};
@@ -219,6 +236,9 @@ int server_init(Server* server) {
 void server_free(Server* server) {
     AppData_free(&server->app);
     RoomTimer_free(&server->room_timer);
+    // after AppData_free (nothing references it), before LoggerData_free so
+    // its close/unlink failures still get logged
+    GarbageData_free(&server->garbage);
     // before Epoll_free (which closes control conn fds this layer references)
     // and before config_var_free (control.ipc_path points into cfg)
     Control_free(&server->control);
@@ -385,6 +405,17 @@ int server_tick(Server* server) {
     AppData_respond(&server->app, &server->htttp.parsed_qs, &server->htttp.response_qs,
                     &server->epoll.player_close_fds);
 
+    // drain the attacks sent on an earlier tick before this one's frames run,
+    // so the victim's snapshot below already shows the incoming garbage
+    bool garbage_lost = false;
+    if (signals.garbage_readable) {
+        if (GarbageData_receive(&server->garbage, &server->garbage.received) == -1) {
+            LOGGER_LOG(LOG_ERROR, "server", "the garbage queue is unreadable; stopping");
+            garbage_lost = true;
+        }
+        AppData_apply_garbage(&server->app, &server->garbage.received);
+    }
+
     // after the requests of this tick, so a key pressed and a frame due in the
     // same tick apply in that order rather than a tick apart
     bool clock_lost = false;
@@ -400,9 +431,7 @@ int server_tick(Server* server) {
     AppData_room_tick(&server->app, server->room_timer.expirations,
                       &server->htttp.response_qs, &server->app.garbage_events,
                       &server->epoll.player_close_fds);
-    // the local leg of the garbage pipeline; the IPC queue replaces this
-    // direct hand-off
-    AppData_apply_garbage(&server->app, &server->app.garbage_events);
+    GarbageData_send(&server->garbage, &server->app.garbage_events);
 
     HtttpData_serialize(&server->htttp, &server->htttp.response_qs, &server->auth.encrypt_qs,
                         &server->epoll.player_close_fds);
@@ -436,6 +465,7 @@ int server_tick(Server* server) {
 
     Acceptor_reset(&server->acceptor);
     AppData_reset(&server->app);
+    GarbageData_reset(&server->garbage);
     PlayerIo_reset(&server->player_io);
     AuthData_reset(&server->auth);
     HtttpData_reset(&server->htttp);
@@ -454,5 +484,5 @@ int server_tick(Server* server) {
 
     // last, so everything logged during the tick leaves in the same iteration
     logger_tick(server, &signals);
-    return (actions.shutdown || clock_lost) ? -1 : 0;
+    return (actions.shutdown || clock_lost || garbage_lost) ? -1 : 0;
 }

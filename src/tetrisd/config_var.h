@@ -19,6 +19,8 @@ struct config_var {
     char* key_path;
     char* log_ipc;
     char* control_ipc;
+    //! @brief POSIX mq name of the garbage queue; not a filesystem path
+    char* garbage_ipc;
 
     unsigned int max_fds;
     unsigned int max_events;
@@ -29,6 +31,8 @@ struct config_var {
     unsigned int client_capacity;
     unsigned int room_tick_hz;
     unsigned int max_player_fd;
+    //! @brief mq depth; like @c garbage_ipc , fixed at init, not reloadable
+    unsigned int garbage_queue_depth;
 };
 int config_var_init(struct config_var* cfg_var);
 void config_var_free(struct config_var* cfg);

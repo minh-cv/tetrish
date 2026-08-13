@@ -6,6 +6,7 @@
 #include "config_var.h"
 #include "control.h"
 #include "epoll.h"
+#include "garbage.h"
 #include "htttp_layer.h"
 #include "logger_layer.h"
 #include "player_io.h"
@@ -22,6 +23,7 @@ typedef struct {
     HtttpData htttp;
     AppData app;
     RoomTimer room_timer;
+    GarbageData garbage;
     ControlData control;
 } Server;
 

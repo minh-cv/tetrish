@@ -147,6 +147,12 @@ int Epoll_poll(EpollData* data, Vec_Fd* player_read, Vec_Fd* player_write, Epoll
                 m_signals->room_timer_expired = true;
             }
             break;
+        case EPOLL_ENTRY_GARBAGE_MQ:
+            // EPOLLERR too: the drain must run to observe and report the error
+            if (ev->events & (EPOLLIN | EPOLLERR)) {
+                m_signals->garbage_readable = true;
+            }
+            break;
         case EPOLL_ENTRY_PLAYER:
             // EPOLLIN first: a peer that sends and closes reports both at once,
             // and the pending bytes are still worth reading. The reader sees

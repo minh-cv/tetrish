@@ -58,6 +58,9 @@ int config_var_init(struct config_var* cfg_var) {
     static const unsigned int CLIENT_CAPACITY_DEFAULT = 8;
     // the nonce response queues two frames back to back, so anything smaller stalls the handshake.
     static const unsigned int CLIENT_CAPACITY_MIN = 2;
+    static const char* const GARBAGE_IPC_DEFAULT = "/tetris-garbage";
+    // the kernel's unprivileged mq_maxmsg cap (/proc/sys/fs/mqueue/msg_max)
+    static const unsigned int GARBAGE_QUEUE_DEPTH_DEFAULT = 10;
 
     char* const tetrishrc_path = concat_path(project_dir, ".tetrishrc");
     if (tetrishrc_path == NULL) {
@@ -166,6 +169,33 @@ int config_var_init(struct config_var* cfg_var) {
         DTOR_ERR_RETURN(errdtor, dtor, -1);
     }
 
+    size_t garbage_ipc_idx = config_get_arg_idx(&config, "tetrisd_garbage_ipc");
+    char* garbage_ipc;
+    if (garbage_ipc_idx != CONFIG_MAX_ARGS) {
+        garbage_ipc = config.argv[garbage_ipc_idx];
+        config.argv[garbage_ipc_idx] = NULL;
+    }
+    else {
+        garbage_ipc = strdup(GARBAGE_IPC_DEFAULT);
+        if (garbage_ipc == NULL) {
+            DTOR_ERR_RETURN(errdtor, dtor, -1);
+        }
+    }
+    DTOR_INSERT(errdtor, free, garbage_ipc);
+
+    // an mq name is not a filesystem path: exactly one '/', leading, then a name
+    if (garbage_ipc[0] != '/' || garbage_ipc[1] == '\0' ||
+        strchr(garbage_ipc + 1, '/') != NULL || strlen(garbage_ipc) >= NAME_MAX) {
+        fprintf(stderr, "tetrisd_garbage_ipc invalid\n");
+        DTOR_ERR_RETURN(errdtor, dtor, -1);
+    }
+
+    unsigned int garbage_queue_depth;
+    if (config_get_uint_arg(&config, "tetrisd_garbage_queue_depth",
+                            GARBAGE_QUEUE_DEPTH_DEFAULT, 1, &garbage_queue_depth) == -1) {
+        DTOR_ERR_RETURN(errdtor, dtor, -1);
+    }
+
     char* log_ipc = config_get_path(&config, "log_ipc", project_dir);
     if (log_ipc == NULL) {
         fputs("log_ipc invalid\n", stderr);
@@ -192,6 +222,8 @@ int config_var_init(struct config_var* cfg_var) {
         .key_path = key_path,
         .log_ipc = log_ipc,
         .control_ipc = control_ipc,
+        .garbage_ipc = garbage_ipc,
+        .garbage_queue_depth = garbage_queue_depth,
         .max_fds = max_fds,
         .max_player_fd = max_player_fd,
         .max_events = max_events,
@@ -214,4 +246,5 @@ void config_var_free(struct config_var* cfg) {
     free(cfg->address);
     free(cfg->log_ipc);
     free(cfg->control_ipc);
+    free(cfg->garbage_ipc);
 }
