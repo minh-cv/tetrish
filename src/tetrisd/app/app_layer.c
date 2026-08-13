@@ -6,6 +6,7 @@
 #include "proto.h"
 #include "type.h"
 #include <assert.h>
+#include <stdarg.h>
 #include <stdbool.h>
 #include <stdio.h>
 #include <stdlib.h>
@@ -199,6 +200,32 @@ void AppData_respond(AppData* data, const SparseSet_HtttpParsedMessageQueue* m_p
     }
 }
 
+static char* malloc_sprintf(const char* fmt, ...) {
+    va_list ap;
+    va_start(ap, fmt);
+    va_list ap_copy;
+    va_copy(ap_copy, ap);
+    int count = vsnprintf(NULL, 0, fmt, ap_copy);
+    if (count < 0) {
+        va_end(ap_copy);
+        va_end(ap);
+        return NULL;        
+    }
+    va_end(ap_copy);
+    char* buf = malloc((size_t)count + 1);
+    if (buf == NULL) {
+        va_end(ap);
+        return NULL;
+    }
+    int result = vsprintf(buf, fmt, ap);
+    va_end(ap);
+    if (result < 0) {
+        free(buf);
+        return NULL;
+    }
+    return buf;
+}
+
 /*!
     @brief build the @c STATE request carrying @p room 's board into
            @p outbound
@@ -210,8 +237,8 @@ void AppData_respond(AppData* data, const SparseSet_HtttpParsedMessageQueue* m_p
     @return -1 if the body or the Content-Length header could not be
             allocated, 0 otherwise
 */
-static int make_state_request(const Room* room, HtttpOutboundMessage* outbound) {
-    DTOR_DEFINE(errdtor, 2);
+static int make_state_request(const Room* room, HtttpOutboundMessage* outbound, Fd fd) {
+    DTOR_DEFINE(errdtor, 3);
     DTOR_DEFINE(dtor, 1);
 
     const State* game = &room->game;
@@ -244,11 +271,17 @@ static int make_state_request(const Room* room, HtttpOutboundMessage* outbound) 
     }
     DTOR_INSERT(errdtor, free, content_length);
 
+    char* path = malloc_sprintf("/room/%d", fd);
+    if (path == NULL) {
+        DTOR_ERR_RETURN(errdtor, dtor, -1);
+    }
+    DTOR_INSERT(errdtor, free, path);
+
     const HtttpOutboundMessage new_outbound = {
         .message.is_request = true,
         .message.request = {
             .method = "STATE",
-            .path = "/",
+            .path = path,
             .header = {
                 {"Content-Length", content_length},
                 {"Content-Type", "application/tetris-state"},
@@ -259,6 +292,7 @@ static int make_state_request(const Room* room, HtttpOutboundMessage* outbound) 
         },
         .ownership = {
             .is_value_owned[0] = true,
+            .is_path_owned = true,
             .is_body_owned = true,
         },
     };
@@ -292,7 +326,7 @@ void AppData_room_tick(AppData* data, uint64_t expirations,
         }
 
         HtttpOutboundMessage push;
-        if (make_state_request(room, &push) == -1) {
+        if (make_state_request(room, &push, (int)fd) == -1) {
             fail_fd(fd, m_response_qs, err_fds);
             continue;
         }
