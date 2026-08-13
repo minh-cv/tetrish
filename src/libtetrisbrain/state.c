@@ -164,7 +164,8 @@ int clear_line(const Tetromino* t, Board* board) {
         write_row = BOARD_HEIGHT - 1;
     }
     
-    for (int read_row = write_row; read_row >= t->row_offset; read_row--) {
+    const int min_read_row = t->row_offset < 0 ? 0 : t->row_offset;
+    for (int read_row = write_row; read_row >= min_read_row; read_row--) {
         bool full = true;
         for (int col = 0; col < BOARD_WIDTH; col++) {
             if ((board->cells)[read_row][col] == TETROMINO_CELL_EMPTY) {
