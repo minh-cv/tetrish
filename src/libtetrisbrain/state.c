@@ -6,21 +6,31 @@
 
 static void fill_random_bag(TetrominoType bag[TETROMINO_TYPE_COUNT], Rng* rng);
 
-State init_state(uint64_t seed) {
+State init_state(uint64_t seed, const StateConfig* config) {
+    static const StateConfig default_config = {
+        .start_level = 0,
+        .frames_per_level_up = 0,
+        .lock_counter_max = 30,
+        .lock_movement_counter_max = 15,
+    };
+    if (config == NULL) {
+        config = &default_config;
+    }
     State s = {
-        .gravity_state = {
-            1,
-            0,
-            30,
-        },
         .lock_state = {
             0,
             0,
-            30,
-            15,
+            config->lock_counter_max,
+            config->lock_movement_counter_max,
             false,
-        }
+        },
+        .level_state = {
+            config->start_level,
+            0,
+            config->frames_per_level_up,
+        },
     };
+    update_level_gravity(&s.gravity_state, config->start_level);
     for (int r = 0; r < BOARD_HEIGHT; r++) {
         for (int c = 0; c < BOARD_WIDTH; c++) {
             s.board_state.board.cells[r][c] = TETROMINO_CELL_EMPTY;
@@ -36,6 +46,20 @@ State init_state(uint64_t seed) {
 
     update_ghost_piece(&s.board_state);
     return s;
+}
+
+/*
+    One place owns the level -> speed curve: the fall period shrinks by two
+    frames per level down to one frame, and past that point the piece starts
+    falling multiple cells per step instead.
+*/
+void update_level_gravity(GravityState* gs, int level) {
+    int counter_max = 30 - 2 * level;
+    if (counter_max < 1) {
+        counter_max = 1;
+    }
+    gs->gravity_frame_counter_max = counter_max;
+    gs->gravity = level > 14 ? 1 + (level - 14) : 1;
 }
 
 static void fill_random_bag(TetrominoType bag[TETROMINO_TYPE_COUNT], Rng* rng) {

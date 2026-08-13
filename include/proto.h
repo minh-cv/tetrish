@@ -74,6 +74,9 @@
 
     @note @c game_score and @c is_game_active have no counterpart in @c State ;
           the server fills them from the room's scoring and status.
+
+    @note @c State.level_state is not carried yet; add it here (a wire-format
+          change) once a client renders it.
 */
 typedef struct {
     BoardState board_state;

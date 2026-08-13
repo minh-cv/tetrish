@@ -174,7 +174,29 @@ bool apply_spawn(State* s) {
     return false;
 }
 
+static void apply_level_tick(State* s) {
+    LevelState* ls = &s->level_state;
+    if (ls->frames_per_level_up <= 0) {
+        return;
+    }
+    ls->frame_counter++;
+    if (ls->frame_counter < ls->frames_per_level_up) {
+        return;
+    }
+    ls->frame_counter = 0;
+    ls->level++;
+    /*
+        The new period may be shorter than the frames already waited, and
+        apply_gravity_tick compares with != rather than >=, so the counter
+        must restart or the piece would never fall again.
+    */
+    s->gravity_state.gravity_frame_counter = 0;
+    update_level_gravity(&s->gravity_state, ls->level);
+}
+
 bool apply_player_inputs(State* s, const bool (*inputs)[PLAYER_INPUT_KEY_COUNT]) {
+    apply_level_tick(s);
+
     if ((*inputs)[PLAYER_INPUT_KEY_HOLD] && s->hold_state.hold_status != HOLD_INACTIVE) {
         return apply_hold(s);
     }

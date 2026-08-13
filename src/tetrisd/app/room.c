@@ -42,7 +42,7 @@ void room_start(AppData* data, size_t room_idx) {
 
     Room* room = SparseSet_Room_get(&data->rooms, room_idx);
     const uint64_t seed = (uint64_t)time(NULL) ^ (uint64_t)room_idx * 0x9e3779b97f4a7c15ULL;
-    room->game = init_state(seed);
+    room->game = init_state(seed, NULL);
     const bool is_topped_out = apply_spawn(&room->game);
     assert(!is_topped_out && "an empty board cannot block the first piece");
     (void)is_topped_out;
