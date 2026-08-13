@@ -268,11 +268,17 @@ static int render_state_json(const Server* server, char* buf, size_t buf_size, s
     const int written = snprintf(buf, buf_size,
         "{\"pid\":%ld,\"players_connected\":%zu,"
         "\"players_authed\":%zu,\"players_capacity\":%u,"
-        "\"fds_used\":%zu,\"fds_capacity\":%zu,\"listen_port\":%d}",
+        "\"fds_used\":%zu,\"fds_capacity\":%zu,\"listen_port\":%d,"
+        "\"garbage_sent\":%llu,\"garbage_injected\":%llu,\"garbage_dropped\":%llu}",
         (long)getpid(), SparseSet_PlayerIoEntry_size(&server->player_io.entries),
         players_authed, server->cfg.max_player_fd,
         SparseSet_EpollEntry_size(&server->epoll.entries),
-        server->epoll.entries.capacity, server->cfg.port);
+        server->epoll.entries.capacity, server->cfg.port,
+        (unsigned long long)server->garbage.sent,
+        (unsigned long long)server->app.garbage_injected,
+        (unsigned long long)(server->app.garbage_dropped_no_target +
+                             server->garbage.dropped_full +
+                             server->garbage.dropped_bad_event));
     if (written < 0 || (size_t)written >= buf_size) {
         return -1;
     }
