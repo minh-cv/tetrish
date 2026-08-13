@@ -15,3 +15,5 @@ compile_commands.json
 archive/
 docs/doxygen/
 docs/doxygen_warnings.log
+.claude/
+temp_docs/
