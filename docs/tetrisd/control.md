@@ -64,16 +64,33 @@ leaves the running config untouched.
 ## tetrisctl
 
 ```
-tetrisctl <status|shutdown|reload> [--json]
+tetrisctl [--socket PATH] [--timeout MS] [--raw] <status|shutdown|reload>
 ```
 
-Reads `control_ipc` from `$PROJECT_DIR/.tetrishrc`, sends one framed request,
-prints the response body (pretty-printed JSON by default, raw with `--json`),
-and exits `0` on 2xx, `2` on config/connect failure, `3` on I/O failure or a
-non-2xx response, `64` on usage error. Frame I/O carries a 3-second timeout so
-a wedged daemon cannot hang the tool. A caveat: `connect(2)` itself is
-blocking; the accept-and-close busy policy keeps the listen backlog (4)
-drained, so this is not observable in practice.
+Reads `control_ipc` from `$PROJECT_DIR/.tetrishrc` unless `--socket` overrides
+it, sends one framed request, prints the response body, and exits. The body is
+pretty-printed JSON by default; `--raw` writes it byte-exact with no added
+newline, so it can be piped to a hash or a parser and match what the daemon
+sent. `--help` prints the usage on stdout and exits `0`.
+
+| Exit | Meaning |
+|---|---|
+| `0` | the daemon answered 2xx |
+| `2` | `PROJECT_DIR` or `.tetrishrc` unusable |
+| `3` | cannot reach the daemon |
+| `4` | request failed, or the reply was unreadable |
+| `5` | the daemon answered, with a non-2xx |
+| `64` | usage error |
+
+The split between `3`, `4` and `5` is what lets a script tell "the daemon is
+not there" from "the daemon refused the command".
+
+Every stage is deadlined by `--timeout` (default 3000 ms), `connect(2)`
+included: it is issued non-blocking and bounded with `poll`, because
+`SO_SNDTIMEO` does not cover it and a daemon stopped before its accept loop
+would otherwise hang the tool indefinitely. `SIGPIPE` is ignored, so a send
+landing on a connection the busy policy has already closed is reported rather
+than killing the process.
 
 ## Why the control plane survives public-listener saturation
 
