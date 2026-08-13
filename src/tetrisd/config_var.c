@@ -51,6 +51,7 @@ int config_var_init(struct config_var* cfg_var) {
     static const unsigned int MAX_FDS_DEFAULT = 1024;
     static const unsigned int MAX_PLAYER_FD_DEFAULT = 1008;
     static const unsigned int MAX_ROOMS_DEFAULT = 512;
+    static const unsigned int MAX_PLAYERS_PER_ROOM_DEFAULT = 8;
     static const unsigned int ROOM_TICK_HZ_DEFAULT = 60;
     static const unsigned int LOGGER_RECONNECT_SECONDS_DEFAULT = 5;
     static const unsigned int LOGGER_CAPACITY_DEFAULT = 512;
@@ -136,6 +137,12 @@ int config_var_init(struct config_var* cfg_var) {
         DTOR_ERR_RETURN(errdtor, dtor, -1);
     }
 
+    unsigned int max_players_per_room;
+    if (config_get_uint_arg(&config, "tetrisd_max_players_per_room",
+                            MAX_PLAYERS_PER_ROOM_DEFAULT, 1, &max_players_per_room) == -1) {
+        DTOR_ERR_RETURN(errdtor, dtor, -1);
+    }
+
     unsigned int room_tick_hz;
     if (config_get_uint_arg(&config, "tetrisd_room_tick_hz", ROOM_TICK_HZ_DEFAULT, 1, &room_tick_hz) == -1) {
         DTOR_ERR_RETURN(errdtor, dtor, -1);
@@ -189,6 +196,7 @@ int config_var_init(struct config_var* cfg_var) {
         .max_player_fd = max_player_fd,
         .max_events = max_events,
         .max_rooms = max_rooms,
+        .max_players_per_room = max_players_per_room,
         .room_tick_hz = room_tick_hz,
         .logger_reconnect_seconds = logger_reconnect_seconds,
         .logger_capacity = logger_capacity,

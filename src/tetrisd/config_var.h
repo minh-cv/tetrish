@@ -23,6 +23,7 @@ struct config_var {
     unsigned int max_fds;
     unsigned int max_events;
     unsigned int max_rooms;
+    unsigned int max_players_per_room;
     unsigned int logger_reconnect_seconds;
     unsigned int logger_capacity;
     unsigned int client_capacity;
