@@ -1,4 +1,5 @@
 #include "app/app_layer.h"
+#include "app/dispatch.h"
 #include "app/room.h"
 #include "dtor.h"
 #include "htttp.h"
@@ -97,30 +98,17 @@ void AppData_close(AppData* data, const SparseSet_bool* close_fds) {
     }
 }
 
-static int respond_one_request(AppData* data, Fd fd, const HtttpRequest* parsed, HtttpOutboundMessage* outbound) {
-    (void)data;
-    (void)fd;
-    outbound->message.is_request = false;
-    if (htttp_make_default_response(HTTTP_STATUS_OK, (const char*)parsed->body, parsed->body_len, false, &outbound->message.response, &outbound->ownership) == -1) {
-        return -1;
-    }
-    return 0;
-}
-
-static int respond_one_frame(AppData* data, Fd fd, const HtttpParsedMessage* parsed, HtttpOutboundMessage* outbound, bool* is_written) {
+static DispatchResult respond_one_frame(AppData* data, Fd fd, const HtttpParsedMessage* parsed, HtttpOutboundMessage* outbound) {
     HtttpStatus status = HTTTP_STATUS_BAD_REQUEST;
     const char* body = NULL;
     size_t body_len = 0;
     switch (parsed->status) {
     case FRAME_OK:
         if (parsed->message.is_request) {
-            int out = respond_one_request(data, fd, &parsed->message.request, outbound);
-            *is_written = out == 0;
-            return out;
+            return respond_one_request(data, fd, &parsed->message.request, outbound);
         }
         else {
-            *is_written = false;
-            return 0;
+            return DISPATCH_NO_RESPONSE;
         }
         break;
     case FRAME_DECRYPT_ERROR:
@@ -142,11 +130,9 @@ static int respond_one_frame(AppData* data, Fd fd, const HtttpParsedMessage* par
     
     outbound->message.is_request = false;
     if (htttp_make_default_response(status, body, body_len, false, &outbound->message.response, &outbound->ownership) == -1) {
-        *is_written = false;
-        return -1;
+        return DISPATCH_ERR;
     }
-    *is_written = true;
-    return 0;
+    return DISPATCH_RESPOND;
 }
 
 void AppData_respond(AppData* data, const SparseSet_HtttpParsedMessageQueue* m_parsed_qs,
@@ -174,14 +160,12 @@ void AppData_respond(AppData* data, const SparseSet_HtttpParsedMessageQueue* m_p
             HtttpOutboundMessage response = {
                 .message.is_request = false,
             };
-            bool is_written;
-
-            if (respond_one_frame(data, (Fd)fd, parsed, &response, &is_written) == -1) {
+            const DispatchResult result = respond_one_frame(data, (Fd)fd, parsed, &response);
+            if (result == DISPATCH_ERR) {
                 failed = true;
                 break;
             }
-
-            if (!is_written) {
+            if (result == DISPATCH_NO_RESPONSE) {
                 continue;
             }
 

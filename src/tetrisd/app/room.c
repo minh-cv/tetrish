@@ -37,8 +37,18 @@ void room_start(AppData* data, size_t room_idx) {
 
     Room* room = SparseSet_Room_get(&data->rooms, room_idx);
     room->game = init_state();
+    memset(room->inputs, 0, sizeof(room->inputs));
     room->status = ROOM_IN_GAME;
     *SparseSet_bool_activate(&data->in_game_rooms, room_idx) = true;
+}
+
+void room_end(AppData* data, size_t room_idx) {
+    assert(SparseSet_Room_contains(&data->rooms, room_idx));
+
+    SparseSet_Room_get(&data->rooms, room_idx)->status = ROOM_LOBBY;
+    if (SparseSet_bool_contains(&data->in_game_rooms, room_idx)) {
+        SparseSet_bool_erase(&data->in_game_rooms, room_idx);
+    }
 }
 
 void room_leave(AppData* data, Fd fd) {

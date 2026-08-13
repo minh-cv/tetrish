@@ -25,13 +25,26 @@ int room_create(AppData* data, Fd fd, size_t* out_room_idx);
 
     @pre @p room_idx is a key in @c rooms
 
-    @post the room is @c ROOM_IN_GAME with a freshly initialized board,
-          and @p room_idx is in @c in_game_rooms
+    @post the room is @c ROOM_IN_GAME with a freshly initialized board and
+          no pending inputs, and @p room_idx is in @c in_game_rooms
 
     @note starting an already started room restarts its board. This is not
           part of the contract.
 */
 void room_start(AppData* data, size_t room_idx);
+
+/*!
+    @brief end the game of the room keyed @p room_idx
+
+    @pre @p room_idx is a key in @c rooms
+
+    @post the room is @c ROOM_LOBBY , its @c game is meaningless, and
+          @p room_idx is absent from @c in_game_rooms
+
+    @note ending a room that is already in @c ROOM_LOBBY does nothing. This
+          is not part of the contract.
+*/
+void room_end(AppData* data, size_t room_idx);
 
 /*!
     @brief take @p fd out of its room, if it is in one

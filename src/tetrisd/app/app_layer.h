@@ -2,6 +2,7 @@
 #define TETRISH_TETRISD_APP_LAYER_H
 
 #include "htttp_layer.h"
+#include "tetrisbrain/input.h"
 #include "tetrisbrain/state.h"
 #include "type.h"
 #include <stdint.h>
@@ -45,6 +46,16 @@ typedef struct {
     Fd member;
     RoomStatus status;
     State game;
+
+    /*!
+        @brief keys the member pressed since the last tick
+
+        Per-member state like @c game , and only meaningful alongside it.
+        The tick applies the whole set as one frame and clears it, so an
+        input request only records a key rather than advancing the game
+        itself.
+    */
+    bool inputs[PLAYER_INPUT_KEY_COUNT];
 } Room;
 
 #define SPARSE_SET_ELEM_TYPE Player
@@ -150,15 +161,17 @@ void AppData_close(
 );
 
 /*!
-    @brief Dummy application layer: for every fd in @p m_parsed_qs , build
-           one default response per parsed entry into its slot in
-           @p m_response_qs , marking fds whose response could not be
-           built in @p err_fds .
+    @brief For every fd in @p m_parsed_qs , act on each parsed entry and
+           append the response it produces, if any, to its slot in
+           @p m_response_qs , marking fds whose response could not be built
+           in @p err_fds .
 
-    A valid request gets a 200 echoing its body. Anything else — a parse
-    error (including in-band transport errors: decrypt failure, oversized
-    read) or a response-typed message — gets a bodyless 400; the
-    connection stays open either way.
+    A valid request is routed by @c respond_one_request (see
+    @c app/dispatch.h ), which decides both the response and whether there
+    is one at all. A parse error, including the in-band transport errors
+    (decrypt failure, oversized read), gets a response naming the failure.
+    A response-typed message is ignored. The connection stays open in
+    every case.
 
     @pre  No entry of @p m_parsed_qs is already marked in @p err_fds
     @pre  @p m_parsed_qs and @p m_response_qs slots were accepted with the
@@ -175,8 +188,6 @@ void AppData_close(
           are currently skipped. If the second is violated, the fd is
           currently failed like an operation failure. Neither behavior is
           part of the contract and must not be relied upon.
-
-    TODO: replace the echo with real game logic (libtetrisbrain).
 */
 void AppData_respond(
     AppData* data,
