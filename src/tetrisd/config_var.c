@@ -45,7 +45,6 @@ int config_var_init(struct config_var* cfg_var) {
         DTOR_ERR_RETURN(errdtor, dtor, -1);
     }
     
-    static const int LISTEN_PORT_DEFAULT = 4321;
     static const char* const ADDRESS_DEFAULT = "localhost";
     static const unsigned int MAX_EVENTS_DEFAULT = 64;
     static const unsigned int MAX_FDS_DEFAULT = 1024;
@@ -76,7 +75,8 @@ int config_var_init(struct config_var* cfg_var) {
 
     long listen_port_long;
     if (config_get_long_arg(&config, "listen_port", &listen_port_long) == -1) {
-        listen_port_long = LISTEN_PORT_DEFAULT;
+        fprintf(stderr, "listen_port missing\n");
+        DTOR_ERR_RETURN(errdtor, dtor, -1);
     }
     if (listen_port_long > UINT16_MAX || listen_port_long <= 0) {
         fprintf(stderr, "listen_port invalid\n");

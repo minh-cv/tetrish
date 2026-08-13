@@ -28,6 +28,9 @@ int execute_builtin_command(char** cmd, size_t index);
 /*!
     @brief Read one line from @p file and split it with `cmdline_parse`.
 
+    A line whose first non-blank character is `#` is a comment and reads as an
+    empty command; `#` elsewhere on the line is an ordinary character.
+
     @post on READ_COMMAND_OK @p out_argv is a malloc'd NULL-terminated argv of
     @p out_argc args, released with `free_command`; it is NULL otherwise.
 */
