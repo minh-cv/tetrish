@@ -137,7 +137,7 @@ void AppData_accept(
 
     @pre the entries in @p close_fds must exist in @c players
 
-    @post each entry left whatever room it was in, so that room's key is
+    @post for each entry that was in a room, that room's key is
           uninitialized in @c rooms , absent from @c in_game_rooms , and
           back in @c free_room_idxs
     @post the slot in @p close_fds is uninitialized in @c players

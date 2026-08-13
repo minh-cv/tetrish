@@ -1,4 +1,5 @@
-#include "app_layer.h"
+#include "app/app_layer.h"
+#include "app/room.h"
 #include "dtor.h"
 #include "htttp.h"
 #include "type.h"
@@ -81,106 +82,6 @@ void AppData_accept(AppData* data, const Vec_Fd* fds, SparseSet_bool* err_fds) {
         assert(err != -1);
         (void)err;
     }
-}
-
-/*!
-    @brief put @p fd in a room of its own, in @c ROOM_LOBBY
-
-    @pre @p fd is a key in @c players
-
-    @post on success, a fresh key of @c rooms holds a room of one member
-          with no game, @p fd 's @c room_idx is that key, and the key is
-          no longer in @c free_room_idxs . @p out_room_idx receives it.
-    @post on failure, nothing changed
-
-    @return -1 if @p fd is already in a room or no room key is free, 0
-            otherwise
-*/
-static int room_create(AppData* data, Fd fd, size_t* out_room_idx) {
-    assert(fd >= 0 && SparseSet_Player_contains(&data->players, (size_t)fd));
-
-    Player* player = SparseSet_Player_get(&data->players, (size_t)fd);
-    if (player->room_idx != ROOM_IDX_NONE) {
-        return -1;
-    }
-    if (Vec_RoomIdx_size(&data->free_room_idxs) == 0) {
-        return -1;
-    }
-
-    const size_t room_idx = *Vec_RoomIdx_back(&data->free_room_idxs);
-    Room room;
-    memset(&room, 0, sizeof(room));
-    room.member = fd;
-    room.status = ROOM_LOBBY;
-
-    const int err = SparseSet_Room_insert(&data->rooms, room_idx, &room);
-    assert(err != -1 && "a free room key is not in rooms");
-    if (err == -1) {
-        return -1;
-    }
-
-    Vec_RoomIdx_pop_back(&data->free_room_idxs);
-    player->room_idx = room_idx;
-    *out_room_idx = room_idx;
-    return 0;
-}
-
-/*!
-    @brief start the game of the room keyed @p room_idx
-
-    @pre @p room_idx is a key in @c rooms
-
-    @post the room is @c ROOM_IN_GAME with a freshly initialized board,
-          and @p room_idx is in @c in_game_rooms
-
-    @note starting an already started room restarts its board. This is not
-          part of the contract.
-*/
-static void room_start(AppData* data, size_t room_idx) {
-    assert(SparseSet_Room_contains(&data->rooms, room_idx));
-
-    Room* room = SparseSet_Room_get(&data->rooms, room_idx);
-    room->game = init_state();
-    room->status = ROOM_IN_GAME;
-    *SparseSet_bool_activate(&data->in_game_rooms, room_idx) = true;
-}
-
-/*!
-    @brief take @p fd out of its room
-
-    @pre @p fd is a key in @c players
-
-    @post @p fd 's @c room_idx is @c ROOM_IDX_NONE
-    @post the room's key is uninitialized in @c rooms , absent from
-          @c in_game_rooms , and returned to @c free_room_idxs
-
-    @note if @p fd is in no room, the call does nothing. This is not part
-          of the contract.
-*/
-static void room_leave(AppData* data, Fd fd) {
-    assert(fd >= 0 && SparseSet_Player_contains(&data->players, (size_t)fd));
-
-    Player* player = SparseSet_Player_get(&data->players, (size_t)fd);
-    if (player->room_idx == ROOM_IDX_NONE) {
-        return;
-    }
-
-    const size_t room_idx = player->room_idx;
-    player->room_idx = ROOM_IDX_NONE;
-
-    assert(SparseSet_Room_contains(&data->rooms, room_idx));
-    assert(SparseSet_Room_get(&data->rooms, room_idx)->member == fd);
-
-    if (SparseSet_bool_contains(&data->in_game_rooms, room_idx)) {
-        SparseSet_bool_erase(&data->in_game_rooms, room_idx);
-    }
-
-    memset(SparseSet_Room_get(&data->rooms, room_idx), 0, sizeof(Room));
-    SparseSet_Room_erase(&data->rooms, room_idx);
-
-    const int err = Vec_RoomIdx_push_back(&data->free_room_idxs, &room_idx);
-    assert(err != -1 && "free list holds one entry per room key");
-    (void)err;
 }
 
 void AppData_close(AppData* data, const SparseSet_bool* close_fds) {
