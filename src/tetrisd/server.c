@@ -317,5 +317,9 @@ AppData_close(&server->app, &server->epoll.player_close_fds);
     if (actions.reload_config) {
         should_reload_config = 1;
     }
-    return actions.shutdown ? -1 : 0;
+    if (actions.shutdown) {
+        LOGGER_LOG(LOG_INFO, "server", "shutdown requested over the control channel");
+        return -1;
+    }
+    return 0;
 }
