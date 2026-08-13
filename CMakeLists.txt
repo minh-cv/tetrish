@@ -38,7 +38,7 @@ add_executable(tetrisctl src/tetrisctl/main.c src/tetrisctl/config_var.c)
 target_include_directories(tetrisctl PRIVATE src/tetrisctl include)
 target_link_libraries(tetrisctl PRIVATE config htttp tetrissh cjson)
 
-add_executable(tetrisd src/tetrisd/main.c src/tetrisd/server.c src/tetrisd/config_var.c src/tetrisd/sig.c src/tetrisd/socket.c src/tetrisd/acceptor.c src/tetrisd/epoll.c src/tetrisd/player_io.c src/tetrisd/auth.c src/tetrisd/htttp_layer.c src/tetrisd/app/app_layer.c src/tetrisd/app/dispatch.c src/tetrisd/app/room.c src/tetrisd/control.c)
+add_executable(tetrisd src/tetrisd/main.c src/tetrisd/server.c src/tetrisd/config_var.c src/tetrisd/sig.c src/tetrisd/socket.c src/tetrisd/acceptor.c src/tetrisd/epoll.c src/tetrisd/player_io.c src/tetrisd/auth.c src/tetrisd/htttp_layer.c src/tetrisd/app/app_layer.c src/tetrisd/app/dispatch.c src/tetrisd/app/room.c src/tetrisd/control.c src/tetrisd/logger_layer.c)
 
 target_include_directories(tetrisd PRIVATE src/tetrisd)
 target_link_libraries(tetrisd PRIVATE daemon logger network common tetrissh config htttp tetrisbrain proto)

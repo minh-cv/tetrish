@@ -23,10 +23,13 @@ int main(void) {
     }
     #endif
 
-    #ifdef TETRISH_TETRISD_NO_DAEMON
-    // dev mode runs in the foreground; the logger otherwise drops everything
+    /*
+        Until the configuration is parsed the log socket's path is unknown, so
+        everything logged before LoggerData_init goes here instead of being
+        dropped by the null handler. Not paired with logger_free_file, which
+        would fclose(stderr); LoggerData_init replaces the handler in place.
+    */
     logger_init_file(stderr);
-    #endif
 
     // after incantation(), which sets SIGHUP to SIG_IGN
     if (set_sig_handler(SIGINT, sig_terminate) == -1 ||

@@ -37,8 +37,8 @@ typedef struct {
 } EpollData;
 
 /*!
-    Per-tick readiness of the singleton entries, which have no fd list of their
-    own to report through the way players do.
+    Per-tick readiness of the singleton entries, which have no queue or fd list
+    of their own to report through the way players do.
 */
 typedef struct {
     bool acceptor_readable;
@@ -47,11 +47,15 @@ typedef struct {
     bool control_writable;
     // EPOLLERR/EPOLLHUP on the control connection, reported whatever the mask
     bool control_hangup;
+    bool logger_writable;
+    // EPOLLERR/EPOLLHUP on the logger socket, reported whatever the interest mask
+    bool logger_hangup;
+    bool logger_timer_expired;
 } EpollSignals;
 
 // takes ownership of epoll_fd; player and control-connection fds are closed by
-// Epoll_close/Epoll_free, other fds (acceptor, listeners, ...) stay owned by
-// their layer.
+// Epoll_close/Epoll_free, other fds (acceptor, listeners, logger, ...) stay
+// owned by their layer.
 int Epoll_init(
     EpollData* data,
     size_t max_entries,
@@ -87,6 +91,18 @@ int Epoll_accept_one(
 void Epoll_close(
     EpollData* data,
     const SparseSet_bool* m_close_fds
+);
+
+/*!
+    Drop the bookkeeping for a singleton fd whose owning layer closes it
+    itself. No EPOLL_CTL_DEL is issued: the fd may already be closed, and
+    closing an fd removes it from the interest list anyway. The caller must
+    erase before the number can be handed to a new accept(), which is why the
+    logger stage runs after the accept fan-out.
+*/
+void Epoll_erase_one(
+    EpollData* data,
+    Fd fd
 );
 
 /*!
