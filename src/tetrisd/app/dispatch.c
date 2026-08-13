@@ -62,23 +62,23 @@ static size_t get_room_idx(const AppData* data, Fd fd) {
 
 static DispatchResult handle_room_create(AppData* data, Fd fd, HtttpOutboundMessage* outbound) {
     if (get_room_idx(data, fd) != ROOM_IDX_NONE) {
-        return respond(outbound, HTTTP_STATUS_BAD_REQUEST, "Already in a room");
+        return respond(outbound, HTTTP_STATUS_CONFLICT, "Already in a room");
     }
 
     size_t room_idx;
     if (room_create(data, fd, &room_idx) == -1) {
         return respond(outbound, HTTTP_STATUS_INTERNAL_SERVER_ERROR, "Room list full");
     }
-    return respond(outbound, HTTTP_STATUS_OK, NULL);
+    return respond(outbound, HTTTP_STATUS_CREATED, NULL);
 }
 
 static DispatchResult handle_room_start(AppData* data, Fd fd, HtttpOutboundMessage* outbound) {
     const size_t room_idx = get_room_idx(data, fd);
     if (room_idx == ROOM_IDX_NONE) {
-        return respond(outbound, HTTTP_STATUS_BAD_REQUEST, "Not in a room");
+        return respond(outbound, HTTTP_STATUS_CONFLICT, "Not in a room");
     }
     if (SparseSet_Room_get(&data->rooms, room_idx)->status == ROOM_IN_GAME) {
-        return respond(outbound, HTTTP_STATUS_BAD_REQUEST, "Game already started");
+        return respond(outbound, HTTTP_STATUS_CONFLICT, "Game already started");
     }
 
     room_start(data, room_idx);
@@ -87,7 +87,7 @@ static DispatchResult handle_room_start(AppData* data, Fd fd, HtttpOutboundMessa
 
 static DispatchResult handle_room_leave(AppData* data, Fd fd, HtttpOutboundMessage* outbound) {
     if (get_room_idx(data, fd) == ROOM_IDX_NONE) {
-        return respond(outbound, HTTTP_STATUS_BAD_REQUEST, "Not in a room");
+        return respond(outbound, HTTTP_STATUS_CONFLICT, "Not in a room");
     }
 
     room_leave(data, fd);
