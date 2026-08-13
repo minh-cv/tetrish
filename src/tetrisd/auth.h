@@ -57,6 +57,26 @@ int AuthData_init(AuthData* data, size_t max_entries, const char* key_path, cons
 void AuthData_free(AuthData* data);
 
 /*!
+    @brief replace @c credential with the one at @p key_path and @p certificate_path
+
+    Validate-then-swap: the new credential is loaded and checked in full before
+    the old one is released, so a failure leaves @p data untouched.
+
+    @pre @p data is initialized
+    @pre no handshake pass is in flight (reload runs between ticks)
+
+    @post on success the old credential is freed and @c credential is the new
+          one; entries already at `AUTH_DONE` are unaffected, since their
+          session keys are derived. An entry at `AUTH_SYMKEY` encrypted its
+          session key to the old certificate and will fail its next decrypt,
+          which fails that fd; the client reconnects.
+    @post on failure @c credential is unchanged.
+
+    @return -1 if failed, 0 otherwise
+*/
+int AuthData_reload_credential(AuthData* data, const char* key_path, const char* certificate_path);
+
+/*!
     @brief reset the per-loop state for next iteration
 
     @post All entries in @c *_qs is inactive, with all frames in each entry freed.

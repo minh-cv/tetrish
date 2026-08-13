@@ -15,8 +15,9 @@ void Acceptor_reset(Acceptor* data);
 /*
     accept(2) until EAGAIN, pushing successful fds to m_accepted_out.
     should_stop_accepting is set when no more connections can be admitted
-    until a slot frees: the fd table is full (m_fd_limit) or the process/system
-    fd limit is exhausted (EMFILE/ENFILE).
+    until a slot frees: the player admission cap is reached (m_fd_limit, read
+    fresh each call so a config reload applies from the next one) or the
+    process/system fd limit is exhausted (EMFILE/ENFILE).
 */
 void Acceptor_accept(
     Acceptor* data,

@@ -65,6 +65,22 @@ int AuthData_init(AuthData* data, size_t max_entries, const char* key_path, cons
     DTOR_RETURN(dtor, 0);
 }
 
+int AuthData_reload_credential(AuthData* data, const char* key_path, const char* certificate_path) {
+    TetrishCredential credential;
+    if (tetrish_credential_init(&credential, key_path, certificate_path) == -1) {
+        return -1;
+    }
+    if (credential.certificate_len == 0 || credential.certificate_len > FRAME_MAX) {
+        LOGGER_LOG(LOG_ERROR, "auth", "certificate does not fit in a frame");
+        tetrish_credential_free(&credential);
+        return -1;
+    }
+
+    tetrish_credential_free(&data->credential);
+    data->credential = credential;
+    return 0;
+}
+
 void AuthData_reset(AuthData* data) {
     for (size_t i = 0; i < SparseSet_WriterFrameQueue_size(&data->encrypt_qs); i++) {
         writer_queue_drain(SparseSet_WriterFrameQueue_at_idx(&data->encrypt_qs, i));

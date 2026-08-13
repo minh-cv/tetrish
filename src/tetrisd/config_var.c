@@ -49,6 +49,7 @@ int config_var_init(struct config_var* cfg_var) {
     static const char* const ADDRESS_DEFAULT = "localhost";
     static const unsigned int MAX_EVENTS_DEFAULT = 64;
     static const unsigned int MAX_FDS_DEFAULT = 1024;
+    static const unsigned int MAX_PLAYER_FD_DEFAULT = 1008;
     static const unsigned int MAX_ROOMS_DEFAULT = 128;
     static const unsigned int ROOM_TICK_HZ_DEFAULT = 60;
     static const unsigned int LOGGER_RECONNECT_SECONDS_DEFAULT = 5;
@@ -119,6 +120,16 @@ int config_var_init(struct config_var* cfg_var) {
         DTOR_ERR_RETURN(errdtor, dtor, -1);
     }
 
+    unsigned int max_player_fd;
+    if (config_get_uint_arg(&config, "max_player_fd", MAX_PLAYER_FD_DEFAULT, 1, &max_player_fd) == -1) {
+        DTOR_ERR_RETURN(errdtor, dtor, -1);
+    }
+
+    if (max_player_fd > max_fds) {
+        fprintf(stderr, "max_player_fd must not exceed max_fds\n");
+        DTOR_ERR_RETURN(errdtor, dtor, -1);
+    }
+
     unsigned int max_rooms;
     if (config_get_uint_arg(&config, "max_rooms", MAX_ROOMS_DEFAULT, 1, &max_rooms) == -1) {
         DTOR_ERR_RETURN(errdtor, dtor, -1);
@@ -173,6 +184,7 @@ int config_var_init(struct config_var* cfg_var) {
         .log_ipc = log_ipc,
         .control_ipc = control_ipc,
         .max_fds = max_fds,
+        .max_player_fd = max_player_fd,
         .max_events = max_events,
         .max_rooms = max_rooms,
         .room_tick_hz = room_tick_hz,
