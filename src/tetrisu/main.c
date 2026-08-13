@@ -4,12 +4,14 @@
 #include "ui/terminal.h"
 
 #include <errno.h>
+#include <fcntl.h>
 #include <poll.h>
 #include <signal.h>
 #include <stdbool.h>
 #include <stdint.h>
 #include <stdio.h>
 #include <string.h>
+#include <termios.h>
 #include <time.h>
 #include <unistd.h>
 
@@ -129,15 +131,75 @@ static int handle_network_timeout(Runtime* runtime, uint64_t now_ms) {
     return result;
 }
 
+// Terminal state captured before the TUI takes over, so a fatal signal can put
+// the terminal back. tui_shutdown() cannot be reused here: it writes through
+// stdio, which is not async-signal-safe, and a crash mid-render would deadlock
+// on stdout's lock instead of restoring anything.
+static struct termios saved_termios;
+static int saved_stdin_flags = -1;
+static volatile sig_atomic_t terminal_captured = 0;
+
+static void capture_terminal_state(void) {
+    if (tcgetattr(STDIN_FILENO, &saved_termios) == -1) {
+        return;
+    }
+    saved_stdin_flags = fcntl(STDIN_FILENO, F_GETFL);
+    if (saved_stdin_flags == -1) {
+        return;
+    }
+    terminal_captured = 1;
+}
+
+// Only write(2), tcsetattr(3) and fcntl(2) are used, all of which POSIX lists
+// as async-signal-safe. The escape sequences mirror tui_shutdown's: disable the
+// mouse reporting modes, reset SGR, show the cursor, leave the alternate screen.
+static void restore_terminal_from_handler(void) {
+    if (terminal_captured == 0) {
+        return;
+    }
+    static const char restore[] =
+        "\x1b[?1006l\x1b[?1002l\x1b[?1000l\x1b[0m\x1b[?25h\x1b[?1049l";
+    (void)!write(STDOUT_FILENO, restore, sizeof(restore) - 1u);
+    (void)tcsetattr(STDIN_FILENO, TCSAFLUSH, &saved_termios);
+    (void)fcntl(STDIN_FILENO, F_SETFL, saved_stdin_flags);
+}
+
+// Restore, then die of the original signal under its default disposition so the
+// exit status and any core dump still reflect the real fault.
+static void fatal_signal_handler(int signal_number) {
+    restore_terminal_from_handler();
+    (void)signal(signal_number, SIG_DFL);
+    (void)raise(signal_number);
+}
+
 static int install_signal_handlers(void) {
+    // SIGQUIT and SIGHUP join the graceful set: left at their defaults they kill
+    // the process outright, and the raw-mode termios and O_NONBLOCK stdin are
+    // properties of the shared file description, so they would outlive it and
+    // strand the user's shell.
+    static const int graceful[] = { SIGINT, SIGTERM, SIGQUIT, SIGHUP };
     struct sigaction action;
     memset(&action, 0, sizeof(action));
     action.sa_handler = request_stop;
     sigemptyset(&action.sa_mask);
-    return sigaction(SIGINT, &action, NULL) == -1 ||
-        sigaction(SIGTERM, &action, NULL) == -1
-        ? -1
-        : 0;
+    for (size_t i = 0; i < sizeof(graceful) / sizeof(graceful[0]); ++i) {
+        if (sigaction(graceful[i], &action, NULL) == -1) {
+            return -1;
+        }
+    }
+
+    // The terminal cannot be handed back on these, only put right on the way out
+    static const int fatal[] = { SIGSEGV, SIGABRT, SIGBUS, SIGILL, SIGFPE };
+    struct sigaction fatal_action;
+    memset(&fatal_action, 0, sizeof(fatal_action));
+    fatal_action.sa_handler = fatal_signal_handler;
+    sigemptyset(&fatal_action.sa_mask);
+    for (size_t i = 0; i < sizeof(fatal) / sizeof(fatal[0]); ++i) {
+        if (sigaction(fatal[i], &fatal_action, NULL) == -1) {
+            return -1;
+        }
+    }
+    return 0;
 }
 
 int main(void) {
@@ -149,6 +211,10 @@ int main(void) {
         config_var_free(&config);
         return 1;
     }
+
+    // must run before the TUI switches the terminal into raw mode, so what the
+    // handlers restore is the shell's own state
+    capture_terminal_state();
 
     TerminalUi ui;
     if (terminal_ui_init(&ui) == -1) {
