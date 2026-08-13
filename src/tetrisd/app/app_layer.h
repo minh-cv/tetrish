@@ -13,9 +13,9 @@
 #define ROOM_IDX_NONE SIZE_MAX
 
 typedef enum {
-    //! @brief room exists, no game running; @c Room.game is meaningless
+    //! @brief room exists, no game running; the members' boards are meaningless
     ROOM_LOBBY,
-    //! @brief @c Room.game is a live board
+    //! @brief every member's @c game is a live board
     ROOM_IN_GAME,
 } RoomStatus;
 
@@ -32,30 +32,69 @@ typedef struct {
 } Player;
 
 /*!
-    @brief One player and the game they are in.
+    @brief One member's seat in a room.
 
-    A room holds exactly one member for now, so the member and the board
-    are plain fields. Battle royale replaces both with a per-member
-    collection; nothing here is meant to generalize by tweaking a bound.
-
-    @invariant @c member is a key in @c AppData.players whose @c room_idx
-               is this room's key.
-    @invariant @c game is only meaningful while `status == ROOM_IN_GAME` .
+    @invariant @c fd is a key in @c AppData.players whose @c room_idx is
+               the owning room's key.
+    @invariant @c game , @c inputs and @c alive are only meaningful while
+               the owning room is @c ROOM_IN_GAME .
 */
 typedef struct {
-    Fd member;
-    RoomStatus status;
+    Fd fd;
     State game;
 
     /*!
         @brief keys the member pressed since the last tick
 
-        Per-member state like @c game , and only meaningful alongside it.
         The tick applies the whole set as one frame and clears it, so an
         input request only records a key rather than advancing the game
         itself.
     */
     bool inputs[PLAYER_INPUT_KEY_COUNT];
+
+    //! @brief cleared when this member's game tops out
+    bool alive;
+} RoomMember;
+
+//! @brief the most next pieces a snapshot can reveal: both bags in full
+#define ROOM_PREVIEW_MAX (2 * TETROMINO_TYPE_COUNT)
+
+/*!
+    @brief Per-room options, fixed at creation. A bare @c CREATE gets
+           @c room_config_default() (see @c app/room.h ).
+*/
+typedef struct {
+    //! @brief listed by room listings; a private room is still joinable by id
+    bool is_public;
+    //! @brief seats in this room; `1` (the default) is singleplayer
+    size_t max_players;
+    //! @brief garbage leaves the room, and only toward other such rooms
+    bool cross_room_garbage;
+    //! @brief every member draws the same piece sequence
+    bool shared_seed;
+    //! @brief next pieces beyond this many are masked out of snapshots
+    int max_preview;
+    StateConfig brain;
+} RoomConfig;
+
+/*!
+    @brief The players of one game.
+
+    @invariant `members[0 .. member_count)` are the seats in use, and
+               `member_count <= config.max_players` .
+    @invariant @c alive_count counts the members whose @c alive is set, and
+               it and @c started_member_count (the @c member_count when the
+               game started) are only meaningful while
+               `status == ROOM_IN_GAME` .
+*/
+typedef struct {
+    //! @brief slice of @c AppData.member_pool sized @c AppData.max_players_per_room
+    RoomMember* members;
+    size_t member_count;
+    size_t alive_count;
+    size_t started_member_count;
+    RoomStatus status;
+    RoomConfig config;
 } Room;
 
 #define SPARSE_SET_ELEM_TYPE Player
@@ -97,6 +136,16 @@ typedef struct {
     SparseSet_bool in_game_rooms;
 
     Vec_RoomIdx free_room_idxs;
+
+    /*!
+        @brief every room's seats, in one allocation
+
+        Room key @c i owns the slice
+        `[i * max_players_per_room, (i + 1) * max_players_per_room)` , so a
+        seat is never allocated after init.
+    */
+    RoomMember* member_pool;
+    size_t max_players_per_room;
 } AppData;
 
 /*!
@@ -109,10 +158,13 @@ typedef struct {
     @post @c rooms and @c in_game_rooms have capacity @p max_rooms and
           size `0`, with all elements uninitialized, and every key of
           @c rooms is in @c free_room_idxs .
+    @post @c member_pool holds @p max_rooms times @p max_players_per_room
+          seats.
 
     @return -1 if failed, 0 otherwise
 */
-int AppData_init(AppData* data, size_t max_entries, size_t max_rooms);
+int AppData_init(AppData* data, size_t max_entries, size_t max_rooms,
+                 size_t max_players_per_room);
 
 /*!
     @brief release all memory in @p data
@@ -148,9 +200,9 @@ void AppData_accept(
 
     @pre the entries in @p close_fds must exist in @c players
 
-    @post for each entry that was in a room, that room's key is
-          uninitialized in @c rooms , absent from @c in_game_rooms , and
-          back in @c free_room_idxs
+    @post each entry that was in a room has left it; a room this emptied
+          has its key uninitialized in @c rooms , absent from
+          @c in_game_rooms , and back in @c free_room_idxs
     @post the slot in @p close_fds is uninitialized in @c players
 
     @note if an entry does not exist in @c players , it is ignored. This is not part of the contract.
@@ -197,9 +249,9 @@ void AppData_respond(
 );
 
 /*!
-    @brief Advance every running game by @p expirations frames and push each
-           member the snapshot the last of them produced, marking fds whose
-           snapshot could not be built in @p err_fds .
+    @brief Advance every running room by @p expirations frames and push each
+           member the snapshot of their own board the last of them produced,
+           marking fds whose snapshot could not be built in @p err_fds .
 
     A tick is the only thing that moves a board. An input request records a
     key (see @c app/dispatch.h ) and this applies the whole recorded set as
@@ -216,11 +268,12 @@ void AppData_respond(
     however many frames it took, so a member never sees the catch-up as more
     messages than a tick on time.
 
-    A game that tops out on one of its frames ends there: its room drops
-    back to @c ROOM_LOBBY , later frames of the same call do not run, and
-    the snapshot is the one carrying @c is_game_active false, so the end of
-    the game reaches the player as part of the frame that caused it rather
-    than as a message of its own.
+    A member whose game tops out on one of its frames is eliminated there:
+    their board freezes, later frames of the same call skip it, and their
+    snapshot is the one carrying @c is_game_active false, so the end of
+    their game reaches them as part of the frame that caused it rather
+    than as a message of its own. A room with nobody left alive ends the
+    same way, dropping back to @c ROOM_LOBBY .
 
     @pre  No room of @c in_game_rooms has a member outside @c players
     @pre  Every fd of @c players has a slot in @p m_response_qs (both are
@@ -228,10 +281,10 @@ void AppData_respond(
 
     @post Nothing happened at all when @p expirations is `0` : no frame runs
           and no snapshot is pushed.
-    @post Every room of @c in_game_rooms whose member is not in @p err_fds
-          has advanced @p expirations frames, or as many as it took to top
-          out, and has no pending inputs. A room that topped out is
-          @c ROOM_LOBBY and absent from @c in_game_rooms .
+    @post Every room of @c in_game_rooms has advanced @p expirations
+          frames, or as many as it took its game to end, and has no
+          pending inputs. A room whose game ended is @c ROOM_LOBBY and
+          absent from @c in_game_rooms .
     @post For each failed fd, it is newly marked in @p err_fds with its slot
           in @p m_response_qs inactive, along with messages there freed.
           Pre-existing entries of @p err_fds are preserved.
@@ -239,9 +292,9 @@ void AppData_respond(
           least 1. Messages appended there are owned by @p m_response_qs and
           reclaimed by HtttpData_reset.
 
-    @note A member already in @p err_fds is closing this tick, so its room
-          is left alone for AppData_close to reclaim: the game neither
-          advances nor reports.
+    @note A member already in @p err_fds is closing this tick, so no
+          snapshot is pushed to it; its board still advances with the rest
+          of the room, and AppData_close removes it at the end of the tick.
     @note Unlike the layers below, this one emits output no input asked for,
           so a response queue with no room left is a reachable state rather
           than a broken capacity contract, and is not treated as a failure.

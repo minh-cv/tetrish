@@ -168,7 +168,8 @@ int server_init(Server* server) {
     }
     DTOR_INSERT(errdtor, HtttpData_free, &server->htttp);
 
-    if (AppData_init(&server->app, server->cfg.max_fds, server->cfg.max_rooms) == -1) {
+    if (AppData_init(&server->app, server->cfg.max_fds, server->cfg.max_rooms,
+                     server->cfg.max_players_per_room) == -1) {
         DTOR_ERR_RETURN(errdtor, dtor, -1);
     }
     DTOR_INSERT(errdtor, AppData_free, &server->app);

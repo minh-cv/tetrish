@@ -6,13 +6,18 @@
 
 static void fill_random_bag(TetrominoType bag[TETROMINO_TYPE_COUNT], Rng* rng);
 
-State init_state(uint64_t seed, const StateConfig* config) {
-    static const StateConfig default_config = {
+StateConfig state_config_default(void) {
+    const StateConfig config = {
         .start_level = 0,
         .frames_per_level_up = 0,
         .lock_counter_max = 30,
         .lock_movement_counter_max = 15,
     };
+    return config;
+}
+
+State init_state(uint64_t seed, const StateConfig* config) {
+    const StateConfig default_config = state_config_default();
     if (config == NULL) {
         config = &default_config;
     }

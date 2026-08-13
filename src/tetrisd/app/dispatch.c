@@ -77,7 +77,7 @@ static DispatchResult handle_room_create(AppData* data, Fd fd, HtttpOutboundMess
     }
 
     size_t room_idx;
-    if (room_create(data, fd, &room_idx) == -1) {
+    if (room_create(data, fd, NULL, &room_idx) == -1) {
         return respond(outbound, HTTTP_STATUS_INTERNAL_SERVER_ERROR, "Room list full");
     }
     return respond(outbound, HTTTP_STATUS_CREATED, NULL);
@@ -250,8 +250,11 @@ static DispatchResult handle_input(AppData* data, Fd fd, Method method, const Ht
         return DISPATCH_NO_RESPONSE;
     }
 
+    RoomMember* member = room_find_member(room, fd);
+    assert(member != NULL && "a player's room_idx names a room seating them");
+
     // an unparseable body has no response to be reported in
-    (void)parse_input(method, parsed, &room->inputs);
+    (void)parse_input(method, parsed, &member->inputs);
     return DISPATCH_NO_RESPONSE;
 }
 

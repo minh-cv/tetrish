@@ -40,7 +40,8 @@ static void fail_fd(size_t fd, SparseSet_HtttpOutboundMessageQueue* m_response_q
     }
 }
 
-int AppData_init(AppData* data, size_t max_entries, size_t max_rooms) {
+int AppData_init(AppData* data, size_t max_entries, size_t max_rooms,
+                 size_t max_players_per_room) {
     DTOR_DEFINE(errdtor, 10);
     DTOR_DEFINE(dtor, 1);
 
@@ -48,6 +49,13 @@ int AppData_init(AppData* data, size_t max_entries, size_t max_rooms) {
         DTOR_ERR_RETURN(errdtor, dtor, -1);
     }
     DTOR_INSERT(errdtor, SparseSet_Player_free, &data->players);
+
+    data->member_pool = calloc(max_rooms * max_players_per_room, sizeof(RoomMember));
+    if (data->member_pool == NULL) {
+        DTOR_ERR_RETURN(errdtor, dtor, -1);
+    }
+    DTOR_INSERT(errdtor, free, data->member_pool);
+    data->max_players_per_room = max_players_per_room;
 
     if (SparseSet_Room_init(&data->rooms, max_rooms) == -1) {
         DTOR_ERR_RETURN(errdtor, dtor, -1);
@@ -75,6 +83,7 @@ void AppData_free(AppData* data) {
     Vec_RoomIdx_free(&data->free_room_idxs);
     SparseSet_bool_free(&data->in_game_rooms);
     SparseSet_Room_free(&data->rooms);
+    free(data->member_pool);
     SparseSet_Player_free(&data->players);
 }
 
@@ -226,14 +235,35 @@ static char* malloc_sprintf(const char* fmt, ...) {
     return buf;
 }
 
+/*
+    Hide the pieces the room's preview setting does not reveal. The queue
+    runs bag1[bag1_offset] (the piece in play), the rest of bag1, then bag2;
+    the first max_preview entries after the piece in play stay, later ones
+    are overwritten with TETROMINO_TYPE_COUNT, which no real piece uses.
+*/
+static void mask_bag_previews(BagState* bag, int max_preview) {
+    int j = bag->bag1_offset + 1 + max_preview;
+    if (j < 0) {
+        j = 0;
+    }
+    for (; j < ROOM_PREVIEW_MAX; j++) {
+        TetrominoType* slot = j < TETROMINO_TYPE_COUNT
+            ? &bag->bag1[j]
+            : &bag->bag2[j - TETROMINO_TYPE_COUNT];
+        *slot = TETROMINO_TYPE_COUNT;
+    }
+}
+
 /*!
-    @brief build the @c STATE request carrying @p room 's board into
+    @brief build the @c STATE request carrying @p member 's board into
            @p outbound
 
     The request is addressed to the room it reports on, `/room/<room_idx>`,
     rather than to the member it goes to.
 
-    @pre @p room_idx is the key of @p room in @c rooms
+    @pre @p room_idx is the key of @p member 's room in @c rooms , and
+         @p room_in_game and @p max_preview are that room's status and
+         preview setting
 
     @post on success @p outbound holds a message whose memory is owned by
           the caller
@@ -242,12 +272,13 @@ static char* malloc_sprintf(const char* fmt, ...) {
     @return -1 if the body, the Content-Length header or the path could not
             be allocated, 0 otherwise
 */
-static int make_state_request(const Room* room, size_t room_idx, HtttpOutboundMessage* outbound) {
+static int make_state_request(const RoomMember* member, size_t room_idx, bool room_in_game,
+                              int max_preview, HtttpOutboundMessage* outbound) {
     DTOR_DEFINE(errdtor, 3);
     DTOR_DEFINE(dtor, 1);
 
-    const State* game = &room->game;
-    const ProtoStateRequest state = {
+    const State* game = &member->game;
+    ProtoStateRequest state = {
         .board_state = game->board_state,
         .combo_counter = game->combo_counter,
         .hold_state = game->hold_state,
@@ -255,8 +286,9 @@ static int make_state_request(const Room* room, size_t room_idx, HtttpOutboundMe
         .garbage_balance = game->garbage_balance,
         .back_to_back_count = game->back_to_back_count,
         .game_score = game->score,
-        .is_game_active = room->status == ROOM_IN_GAME,
+        .is_game_active = room_in_game && member->alive,
     };
+    mask_bag_previews(&state.bag_state, max_preview);
 
     unsigned char* body;
     size_t body_len;
@@ -317,28 +349,33 @@ void AppData_room_tick(AppData* data, uint64_t expirations,
         Room* room = SparseSet_Room_get(&data->rooms, room_idx);
         assert(room->status == ROOM_IN_GAME && "in_game_rooms holds the rooms in a game");
 
-        const Fd fd_raw = room->member;
-        assert(fd_raw >= 0 && SparseSet_Player_contains(&data->players, (size_t)fd_raw));
-        const size_t fd = (size_t)fd_raw;
-        if (SparseSet_bool_contains(err_fds, fd)) {
-            continue;
-        }
-
         // the first frame is the one carrying the recorded inputs; room_tick
         // clears them, so the catch-up frames advance on none
         for (uint64_t f = 0; f < expirations && room->status == ROOM_IN_GAME; f++) {
             room_tick(data, room_idx);
         }
 
-        HtttpOutboundMessage push;
-        if (make_state_request(room, room_idx, &push) == -1) {
-            fail_fd(fd, m_response_qs, err_fds);
-            continue;
-        }
+        const bool room_in_game = room->status == ROOM_IN_GAME;
+        for (size_t m = 0; m < room->member_count; m++) {
+            const RoomMember* member = &room->members[m];
+            const Fd fd_raw = member->fd;
+            assert(fd_raw >= 0 && SparseSet_Player_contains(&data->players, (size_t)fd_raw));
+            const size_t fd = (size_t)fd_raw;
+            if (SparseSet_bool_contains(err_fds, fd)) {
+                continue;
+            }
 
-        HtttpOutboundMessageQueue* out = SparseSet_HtttpOutboundMessageQueue_activate(m_response_qs, fd);
-        if (HtttpOutboundMessageQueue_push_back(out, &push) == -1) {
-            htttp_message_free(&push.message, &push.ownership);
+            HtttpOutboundMessage push;
+            if (make_state_request(member, room_idx, room_in_game,
+                                   room->config.max_preview, &push) == -1) {
+                fail_fd(fd, m_response_qs, err_fds);
+                continue;
+            }
+
+            HtttpOutboundMessageQueue* out = SparseSet_HtttpOutboundMessageQueue_activate(m_response_qs, fd);
+            if (HtttpOutboundMessageQueue_push_back(out, &push) == -1) {
+                htttp_message_free(&push.message, &push.ownership);
+            }
         }
     }
 }

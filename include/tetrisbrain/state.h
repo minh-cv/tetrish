@@ -106,7 +106,8 @@ typedef enum TSpinType {
     T_SPIN_MINI,
 } TSpinType;
 
-// NULL config means the defaults documented on StateConfig.
+StateConfig state_config_default(void);
+// NULL config means state_config_default().
 State init_state(uint64_t seed, const StateConfig* config);
 // Set gravity speed from a level; the level 0 result matches init_state.
 void update_level_gravity(GravityState* gs, int level);
