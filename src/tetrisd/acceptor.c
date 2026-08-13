@@ -3,6 +3,8 @@
 #include "socket.h"
 #include <assert.h>
 #include <errno.h>
+#include <netinet/tcp.h>
+#include <netinet/in.h>
 #include <sys/socket.h>
 #include <unistd.h>
 
@@ -58,6 +60,12 @@ void Acceptor_accept(Acceptor* data, size_t m_fd_limit, Vec_Fd* m_accepted_out, 
             close(fd);
             continue;
         }
+
+        int opt = 1;
+        if (setsockopt(fd, IPPROTO_TCP, TCP_NODELAY, &opt, sizeof(opt)) == -1) {
+
+        }
+
 
         const int err = Vec_Fd_push_back(m_accepted_out, &fd);
         assert(err != -1);
