@@ -2,6 +2,7 @@
 #define TETRISH_TETRISU_COMMAND_ROUTER_H
 
 #include "command/parser.h"
+#include "game/intent.h"
 
 #include <stddef.h>
 
@@ -10,6 +11,7 @@ typedef enum {
     COMMAND_QUIT,
     COMMAND_RECONNECT,
     COMMAND_DISCONNECT,
+    COMMAND_GAME,
     COMMAND_SEND_RAW,
     COMMAND_UNSUPPORTED,
 } CommandType;
@@ -18,12 +20,15 @@ typedef struct {
     CommandType type;
     char* argument;
     size_t argument_len;
+    GameIntentType game_intent;
 } ParsedCommand;
 
 typedef enum {
     COMMAND_ROUTE_OK,
     COMMAND_ROUTE_UNKNOWN,
     COMMAND_ROUTE_MISSING_ARGUMENT,
+    COMMAND_ROUTE_INVALID_ARGUMENT,
+    COMMAND_ROUTE_TOO_MANY_ARGUMENTS,
     COMMAND_ROUTE_NOMEM,
 } CommandRouteResult;
 

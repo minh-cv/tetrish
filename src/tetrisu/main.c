@@ -67,14 +67,18 @@ static int execute_effect(
         result = net_client_connect(runtime->net, now_ms, &events);
         break;
     case APP_EFFECT_NET_SEND:
-        result = net_client_send(
-            runtime->net,
-            effect->payload.ptr,
-            effect->payload.len,
-            now_ms,
-            &events
-        );
+    {
+        const ClientRequest request = {
+            .method = effect->method,
+            .path = effect->path,
+            .body = effect->payload.ptr,
+            .body_len = effect->payload.len,
+            .content_type = effect->content_type,
+            .completion = effect->completion,
+        };
+        result = net_client_send_request(runtime->net, &request, now_ms, &events);
         break;
+    }
     case APP_EFFECT_NET_DISCONNECT:
         result = net_client_disconnect(runtime->net, &events);
         break;
@@ -174,7 +178,9 @@ int main(void) {
         running = false;
     }
     if (running) {
-        terminal_ui_update(&ui, &initial_commands);
+        AppView view;
+        app_build_view(&app, &view);
+        terminal_ui_update(&ui, &view, &initial_commands);
     }
     ui_command_list_free(&initial_commands);
     if (running) {
@@ -234,7 +240,9 @@ int main(void) {
 
         UiCommandList commands;
         ui_command_list_init(&commands);
-        terminal_ui_update(&ui, &commands);
+        AppView input_view;
+        app_build_view(&app, &input_view);
+        terminal_ui_update(&ui, &input_view, &commands);
         for (size_t i = 0; running && i < commands.count; ++i) {
             const AppEvent event = {
                 .type = APP_EVENT_COMMAND_SUBMITTED,

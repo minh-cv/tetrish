@@ -3,6 +3,18 @@
 
 #include <stddef.h>
 
+/*!
+    @brief How a successfully transmitted client request completes.
+
+    Room lifecycle requests receive an HTTTP response. Gameplay inputs are
+    intentionally one-way and complete as soon as their encrypted frame has
+    been fully written.
+*/
+typedef enum {
+    CLIENT_REQUEST_EXPECT_REPLY,
+    CLIENT_REQUEST_COMPLETE_ON_SEND,
+} ClientRequestCompletion;
+
 typedef struct {
     unsigned char* ptr;
     size_t len;

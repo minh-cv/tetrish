@@ -2,6 +2,7 @@
 
 #include "net/htttp_codec.h"
 #include "net/inbound_policy.h"
+#include "proto.h"
 
 #include <limits.h>
 #include <poll.h>
@@ -16,6 +17,7 @@ static void reset_connection(NetClient* client) {
     tetrissh_channel_free(&client->secure);
     owned_bytes_free(&client->pending_plaintext);
     client->state = NET_CLIENT_DISCONNECTED;
+    client->pending_completion = CLIENT_REQUEST_EXPECT_REPLY;
     client->deadline_ms = 0;
     client->has_deadline = false;
 }
@@ -124,6 +126,23 @@ int net_client_send(
     uint64_t now_ms,
     NetEventList* events
 ) {
+    const ClientRequest request = {
+        .method = "HTTTP",
+        .path = "",
+        .body = payload,
+        .body_len = length,
+        .content_type = "text/plain",
+        .completion = CLIENT_REQUEST_EXPECT_REPLY,
+    };
+    return net_client_send_request(client, &request, now_ms, events);
+}
+
+int net_client_send_request(
+    NetClient* client,
+    const ClientRequest* request,
+    uint64_t now_ms,
+    NetEventList* events
+) {
     if (client->state != NET_CLIENT_READY_IDLE) {
         return emit_error(
             client,
@@ -132,17 +151,19 @@ int net_client_send(
         );
     }
 
-    const ClientRequest request = {
-        .method = "HTTTP",
-        .path = "",
-        .body = payload,
-        .body_len = length,
-        .content_type = "text/plain",
-    };
+    if (request == NULL ||
+        (request->completion != CLIENT_REQUEST_EXPECT_REPLY &&
+         request->completion != CLIENT_REQUEST_COMPLETE_ON_SEND)) {
+        return emit_error(
+            client,
+            events,
+            client_error(CLIENT_ERROR_PROTOCOL, 0, "invalid request completion policy")
+        );
+    }
     OwnedBytes plaintext;
     owned_bytes_init(&plaintext);
     ClientError error = client_error(CLIENT_ERROR_NONE, 0, NULL);
-    if (htttp_codec_encode_request(&request, &plaintext) == -1) {
+    if (htttp_codec_encode_request(request, &plaintext) == -1) {
         return emit_error(
             client,
             events,
@@ -154,16 +175,21 @@ int net_client_send(
         return emit_error(client, events, error);
     }
     owned_bytes_move(&client->pending_plaintext, &plaintext);
+    client->pending_completion = request->completion;
     client->state = NET_CLIENT_READY_SENDING;
     client->deadline_ms = now_ms + REQUEST_TIMEOUT_MS;
     client->has_deadline = true;
-    return emit_event(
+    const int emitted = emit_event(
         events,
         NET_EVENT_SEND_ACCEPTED,
         NULL,
         0,
         client_error(CLIENT_ERROR_NONE, 0, NULL)
     );
+    if (emitted == 0) {
+        events->items[events->count - 1].completion = request->completion;
+    }
+    return emitted;
 }
 
 int net_client_fd(const NetClient* client) {
@@ -211,13 +237,22 @@ static int accept_plaintext(NetClient* client, OwnedBytes* plaintext, NetEventLi
     const OwnedBytes body = htttp_codec_borrow_body(&message);
     int result = 0;
     if (disposition == NET_INBOUND_STATE_PUSH) {
+        ProtoStateRequest state;
+        if (proto_parse_state_request(body.ptr, body.len, &state) == -1) {
+            owned_htttp_message_free(&message);
+            return emit_error(
+                client,
+                events,
+                client_error(CLIENT_ERROR_PROTOCOL, 0, "server sent invalid STATE body")
+            );
+        }
         result = emit_event(
-            events,
-            NET_EVENT_STATE_PUSH,
-            body.ptr,
-            body.len,
+            events, NET_EVENT_STATE_PUSH, NULL, 0,
             client_error(CLIENT_ERROR_NONE, 0, NULL)
         );
+        if (result == 0) {
+            events->items[events->count - 1].state = state;
+        }
     } else if (disposition == NET_INBOUND_REPLY || disposition == NET_INBOUND_LEGACY_ECHO) {
         result = emit_event(
             events,
@@ -227,6 +262,10 @@ static int accept_plaintext(NetClient* client, OwnedBytes* plaintext, NetEventLi
             client_error(CLIENT_ERROR_NONE, 0, NULL)
         );
         if (result == 0) {
+            if (disposition == NET_INBOUND_REPLY) {
+                events->items[events->count - 1].response_status =
+                    (int)message.view.response.status;
+            }
             owned_bytes_free(&client->pending_plaintext);
             client->state = NET_CLIENT_READY_IDLE;
             client->has_deadline = false;
@@ -294,9 +333,25 @@ static int advance_secure(
         }
     }
     if ((step.events & SECURE_CHANNEL_EVENT_APP_SENT) != 0) {
-        client->state = NET_CLIENT_READY_AWAITING_REPLY;
-        client->deadline_ms = now_ms + REQUEST_TIMEOUT_MS;
-        client->has_deadline = true;
+        if (client->pending_completion == CLIENT_REQUEST_EXPECT_REPLY) {
+            client->state = NET_CLIENT_READY_AWAITING_REPLY;
+            client->deadline_ms = now_ms + REQUEST_TIMEOUT_MS;
+            client->has_deadline = true;
+        }
+        else {
+            owned_bytes_free(&client->pending_plaintext);
+            client->state = NET_CLIENT_READY_IDLE;
+            client->has_deadline = false;
+            if (emit_event(
+                events, NET_EVENT_SEND_COMPLETED, NULL, 0,
+                client_error(CLIENT_ERROR_NONE, 0, NULL)
+            ) == -1) {
+                tetrissh_channel_step_free(&step);
+                return -1;
+            }
+            events->items[events->count - 1].completion =
+                CLIENT_REQUEST_COMPLETE_ON_SEND;
+        }
     }
     int result = 0;
     if ((step.events & SECURE_CHANNEL_EVENT_PLAINTEXT) != 0) {

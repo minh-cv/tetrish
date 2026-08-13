@@ -13,6 +13,7 @@ typedef struct {
     const unsigned char* body;
     size_t body_len;
     const char* content_type;
+    ClientRequestCompletion completion;
 } ClientRequest;
 
 typedef struct {
@@ -51,10 +52,13 @@ int htttp_codec_encode_request(const ClientRequest* request, OwnedBytes* out);
 int htttp_codec_decode_owned(OwnedBytes* backing, OwnedHtttpMessage* out);
 
 /*!
-    @brief report whether @p message is the one-way server `STATE` request
+    @brief report whether @p message is a typed one-way `STATE /room/<fd>` request
 
     @pre @p message is a successfully decoded message
     @post @p message is unchanged
+
+    The message must carry Content-Type `application/tetris-state` and a room
+    path whose suffix consists only of decimal digits.
 */
 bool htttp_codec_is_state_push(const OwnedHtttpMessage* message);
 

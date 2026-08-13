@@ -3,6 +3,7 @@
 #include "wire.h"
 
 #include <stdint.h>
+#include <ctype.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
@@ -77,8 +78,30 @@ int htttp_codec_decode_owned(OwnedBytes* backing, OwnedHtttpMessage* out) {
 }
 
 bool htttp_codec_is_state_push(const OwnedHtttpMessage* message) {
-    return message->view.is_request &&
-        strcmp(message->view.request.method, "STATE") == 0;
+    if (!message->view.is_request ||
+        strcmp(message->view.request.method, "STATE") != 0) {
+        return false;
+    }
+    const char* content_type = htttp_get_header(&message->view, "Content-Type");
+    if (content_type == NULL ||
+        strcmp(content_type, "application/tetris-state") != 0) {
+        return false;
+    }
+    static const char prefix[] = "/room/";
+    const char* path = message->view.request.path;
+    if (path == NULL || strncmp(path, prefix, sizeof(prefix) - 1) != 0) {
+        return false;
+    }
+    path += sizeof(prefix) - 1;
+    if (*path == '\0') {
+        return false;
+    }
+    for (; *path != '\0'; ++path) {
+        if (!isdigit((unsigned char)*path)) {
+            return false;
+        }
+    }
+    return true;
 }
 
 OwnedBytes htttp_codec_borrow_body(const OwnedHtttpMessage* message) {

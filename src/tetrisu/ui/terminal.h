@@ -20,6 +20,7 @@ typedef struct {
     size_t cursor;
     size_t dropped_events_seen;
     char status[128];
+    bool command_mode;
     bool initialized;
     bool dirty;
 } TerminalUi;
@@ -75,11 +76,16 @@ int terminal_ui_poll_input(TerminalUi* ui);
     submitted lines are parsed and routed into commands owned by @p commands.
 
     @pre @p ui is initialized and `terminal_ui_poll_input()` succeeded this pass
+    @pre @p view borrows valid application state
     @pre @p commands is initialized and empty
     @post each current-frame input event is interpreted exactly once
     @post editor-only intent changes only @p ui; Enter/Ctrl-C may append commands
 */
-void terminal_ui_update(TerminalUi* ui, UiCommandList* commands);
+void terminal_ui_update(
+    TerminalUi* ui,
+    const AppView* view,
+    UiCommandList* commands
+);
 
 /*!
     @brief render an immutable application view and the local command editor

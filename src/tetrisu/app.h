@@ -2,14 +2,17 @@
 #define TETRISH_TETRISU_APP_H
 
 #include "command/router.h"
+#include "game/intent.h"
 #include "net/event.h"
 #include "net/message.h"
+#include "proto.h"
 
 #include <stdbool.h>
 #include <stddef.h>
 
 #define APP_EFFECT_LIST_CAPACITY 4u
 #define APP_NOTIFICATION_CAPACITY 256u
+#define APP_GAME_INPUT_QUEUE_CAPACITY 32u
 
 typedef enum {
     APP_CONNECTION_DISCONNECTED,
@@ -24,15 +27,40 @@ typedef enum {
     APP_REQUEST_PENDING,
 } AppRequestState;
 
+typedef enum {
+    APP_GAME_NO_ROOM,
+    APP_GAME_LOBBY,
+    APP_GAME_ACTIVE,
+} AppGamePhase;
+
+typedef enum {
+    APP_PENDING_NONE,
+    APP_PENDING_CREATE,
+    APP_PENDING_JOIN,
+    APP_PENDING_START,
+    APP_PENDING_LEAVE,
+} AppPendingOperation;
+
 /*!
     @invariant a non-idle request exists only while the connection is ready
-    @invariant @c remote_state and @c last_message are uniquely owned snapshots
+    @invariant queued intents are all one-way gameplay inputs
+    @invariant @c input_count does not exceed @c APP_GAME_INPUT_QUEUE_CAPACITY
+    @invariant @c last_message is uniquely owned
+    @invariant @c game_state is meaningful iff @c has_game_state is true
 */
 typedef struct {
     AppConnectionState connection;
     AppRequestState request;
-    OwnedBytes remote_state;
+    AppGamePhase game_phase;
+    AppPendingOperation pending_operation;
+    ClientRequestCompletion active_completion;
+    GameIntentType input_queue[APP_GAME_INPUT_QUEUE_CAPACITY];
+    size_t input_head;
+    size_t input_count;
+    ProtoStateRequest game_state;
+    bool has_game_state;
     OwnedBytes last_message;
+    int last_response_status;
     char notification[APP_NOTIFICATION_CAPACITY];
     bool quit_requested;
     bool view_dirty;
@@ -59,8 +87,16 @@ typedef enum {
     APP_EFFECT_QUIT,
 } AppEffectType;
 
+/*!
+    @invariant string fields borrow literals and outlive the effect list
+    @invariant @c payload is uniquely owned
+*/
 typedef struct {
     AppEffectType type;
+    const char* method;
+    const char* path;
+    const char* content_type;
+    ClientRequestCompletion completion;
     OwnedBytes payload;
 } AppEffect;
 
@@ -75,17 +111,20 @@ typedef struct {
 typedef struct {
     AppConnectionState connection;
     AppRequestState request;
-    const OwnedBytes* remote_state;
+    AppGamePhase game_phase;
+    const ProtoStateRequest* game_state;
+    bool has_game_state;
     const OwnedBytes* last_message;
+    int last_response_status;
+    size_t queued_inputs;
     const char* notification;
     bool quit_requested;
 } AppView;
 
 /*!
-    @brief initialize application state and an empty effect list
-
+    @brief initialize application state
     @pre @p app is not initialized
-    @post @p app owns no message allocations and starts disconnected/idle
+    @post @p app owns no allocation and starts disconnected, idle and outside a room
 */
 void app_init(AppState* app);
 
@@ -114,9 +153,7 @@ void app_effect_list_free(AppEffectList* effects);
     @pre @p app is initialized
     @pre @p effects is initialized and empty
     @pre payload referenced by @p event remains valid for this call
-
     @post only @p app and @p effects may change
-    @post @p event and all referenced payloads remain owned by their caller
     @post emitted effects own their payloads
 
     @return `0` on success, `-1` if an effect/payload cannot be allocated

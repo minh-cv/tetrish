@@ -3,6 +3,7 @@
 
 #include "net/error.h"
 #include "net/message.h"
+#include "proto.h"
 
 #include <stddef.h>
 
@@ -13,6 +14,7 @@ typedef enum {
     NET_EVENT_HANDSHAKING,
     NET_EVENT_CONNECTED,
     NET_EVENT_SEND_ACCEPTED,
+    NET_EVENT_SEND_COMPLETED,
     NET_EVENT_REPLY,
     NET_EVENT_ECHO,
     NET_EVENT_STATE_PUSH,
@@ -24,6 +26,9 @@ typedef struct {
     NetEventType type;
     OwnedBytes payload;
     ClientError error;
+    ClientRequestCompletion completion;
+    int response_status;
+    ProtoStateRequest state;
 } NetEvent;
 
 typedef struct {
