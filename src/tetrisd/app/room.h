@@ -29,14 +29,19 @@ int room_create(AppData* data, Fd fd, size_t* out_room_idx);
           first piece in play and no pending inputs, and @p room_idx is in
           @c in_game_rooms
 
-    @note the board is seeded from the wall clock and @p room_idx , so a
-          game is not reproducible across runs. This is not part of the
-          contract; a seed the caller supplies would be.
+    @note the board is seeded from the system CSPRNG, so a game is not
+          reproducible across runs. This is not part of the contract; a seed
+          the caller supplies would be — but it must never be one a client can
+          choose, since the seed fixes the whole piece sequence and every
+          garbage hole column for both players.
 
     @note starting an already started room restarts its board. This is not
           part of the contract.
+
+    @return `0` on success, `-1` if no secure seed is available, in which case
+            the room is left untouched and not started
 */
-void room_start(AppData* data, size_t room_idx);
+int room_start(AppData* data, size_t room_idx);
 
 /*!
     @brief advance the game of the room keyed @p room_idx by one frame

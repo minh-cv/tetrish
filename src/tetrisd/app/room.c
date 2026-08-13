@@ -3,9 +3,9 @@
 #include "tetrisbrain/control.h"
 #include "tetrisbrain/state.h"
 #include <assert.h>
+#include <openssl/rand.h>
 #include <stdbool.h>
 #include <string.h>
-#include <time.h>
 
 int room_create(AppData* data, Fd fd, size_t* out_room_idx) {
     assert(fd >= 0 && SparseSet_Player_contains(&data->players, (size_t)fd));
@@ -37,11 +37,20 @@ int room_create(AppData* data, Fd fd, size_t* out_room_idx) {
     return 0;
 }
 
-void room_start(AppData* data, size_t room_idx) {
+int room_start(AppData* data, size_t room_idx) {
     assert(SparseSet_Room_contains(&data->rooms, room_idx));
 
     Room* room = SparseSet_Room_get(&data->rooms, room_idx);
-    const uint64_t seed = (uint64_t)time(NULL) ^ (uint64_t)room_idx * 0x9e3779b97f4a7c15ULL;
+    // the seed fixes the entire piece sequence and every garbage hole column,
+    // and shared_seed hands the same one to both players, so it has to be
+    // unguessable: anything derived from the clock is brute-forceable from the
+    // server time alone. Nothing here falls back to a weaker source, and the
+    // seed is deliberately never logged.
+    uint64_t seed;
+    if (RAND_bytes((unsigned char*)&seed, sizeof(seed)) != 1) {
+        LOGGER_LOG(LOG_ERROR, "room", "room=%zu cannot start: no secure seed available", room_idx);
+        return -1;
+    }
     room->game = init_state(seed);
     const bool is_topped_out = apply_spawn(&room->game);
     assert(!is_topped_out && "an empty board cannot block the first piece");
@@ -49,8 +58,8 @@ void room_start(AppData* data, size_t room_idx) {
     memset(room->inputs, 0, sizeof(room->inputs));
     room->status = ROOM_IN_GAME;
     *SparseSet_bool_activate(&data->in_game_rooms, room_idx) = true;
-    LOGGER_LOG(LOG_INFO, "room", "room=%zu game started for fd=%d, seed=%llu",
-               room_idx, room->member, (unsigned long long)seed);
+    LOGGER_LOG(LOG_INFO, "room", "room=%zu game started for fd=%d", room_idx, room->member);
+    return 0;
 }
 
 void room_tick(AppData* data, size_t room_idx) {
