@@ -29,7 +29,7 @@ int config_var_init(struct config_var* cfg_var) {
     DTOR_INSERT(dtor, config_free, &config);
 
     // same fallback as tetrisd's config_var so both ends agree on the socket
-    char* control_ipc = config_get_path(&config, "control_ipc", project_dir);
+    char* control_ipc = config_get_path(&config, "tetrisd_control_ipc", project_dir);
     if (control_ipc == NULL) {
         control_ipc = concat_path(project_dir, "tetrisd.sock");
         if (control_ipc == NULL) {

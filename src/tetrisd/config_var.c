@@ -50,7 +50,7 @@ int config_var_init(struct config_var* cfg_var) {
     static const unsigned int MAX_EVENTS_DEFAULT = 64;
     static const unsigned int MAX_FDS_DEFAULT = 1024;
     static const unsigned int MAX_PLAYER_FD_DEFAULT = 1008;
-    static const unsigned int MAX_ROOMS_DEFAULT = 128;
+    static const unsigned int MAX_ROOMS_DEFAULT = 512;
     static const unsigned int ROOM_TICK_HZ_DEFAULT = 60;
     static const unsigned int LOGGER_RECONNECT_SECONDS_DEFAULT = 5;
     static const unsigned int LOGGER_CAPACITY_DEFAULT = 512;
@@ -79,7 +79,7 @@ int config_var_init(struct config_var* cfg_var) {
         DTOR_ERR_RETURN(errdtor, dtor, -1);
     }
 
-    size_t address_idx = config_get_arg_idx(&config, "address");
+    size_t address_idx = config_get_arg_idx(&config, "tetrisd_address");
     char* address;
     if (address_idx != CONFIG_MAX_ARGS) {
         address = config.argv[address_idx];
@@ -111,48 +111,50 @@ int config_var_init(struct config_var* cfg_var) {
     DTOR_INSERT(errdtor, free, key_path);
 
     unsigned int max_events;
-    if (config_get_uint_arg(&config, "max_events", MAX_EVENTS_DEFAULT, 1, &max_events) == -1) {
+    if (config_get_uint_arg(&config, "tetrisd_max_events", MAX_EVENTS_DEFAULT, 1, &max_events) == -1) {
         DTOR_ERR_RETURN(errdtor, dtor, -1);
     }
 
     unsigned int max_fds;
-    if (config_get_uint_arg(&config, "max_fds", MAX_FDS_DEFAULT, 1, &max_fds) == -1) {
+    if (config_get_uint_arg(&config, "tetrisd_max_fds", MAX_FDS_DEFAULT, 1, &max_fds) == -1) {
         DTOR_ERR_RETURN(errdtor, dtor, -1);
     }
 
     unsigned int max_player_fd;
-    if (config_get_uint_arg(&config, "max_player_fd", MAX_PLAYER_FD_DEFAULT, 1, &max_player_fd) == -1) {
+    if (config_get_uint_arg(&config, "tetrisd_max_player_fd",
+                            MAX_PLAYER_FD_DEFAULT, 1, &max_player_fd) == -1) {
         DTOR_ERR_RETURN(errdtor, dtor, -1);
     }
 
     if (max_player_fd > max_fds) {
-        fprintf(stderr, "max_player_fd must not exceed max_fds\n");
+        fprintf(stderr, "tetrisd_max_player_fd must not exceed tetrisd_max_fds\n");
         DTOR_ERR_RETURN(errdtor, dtor, -1);
     }
 
     unsigned int max_rooms;
-    if (config_get_uint_arg(&config, "max_rooms", MAX_ROOMS_DEFAULT, 1, &max_rooms) == -1) {
+    if (config_get_uint_arg(&config, "tetrisd_max_rooms", MAX_ROOMS_DEFAULT, 1, &max_rooms) == -1) {
         DTOR_ERR_RETURN(errdtor, dtor, -1);
     }
 
     unsigned int room_tick_hz;
-    if (config_get_uint_arg(&config, "room_tick_hz", ROOM_TICK_HZ_DEFAULT, 1, &room_tick_hz) == -1) {
+    if (config_get_uint_arg(&config, "tetrisd_room_tick_hz", ROOM_TICK_HZ_DEFAULT, 1, &room_tick_hz) == -1) {
         DTOR_ERR_RETURN(errdtor, dtor, -1);
     }
 
     unsigned int logger_reconnect_seconds;
-    if (config_get_uint_arg(&config, "logger_reconnect_seconds",
+    if (config_get_uint_arg(&config, "tetrisd_logger_reconnect_seconds",
                             LOGGER_RECONNECT_SECONDS_DEFAULT, 1, &logger_reconnect_seconds) == -1) {
         DTOR_ERR_RETURN(errdtor, dtor, -1);
     }
 
     unsigned int logger_capacity;
-    if (config_get_uint_arg(&config, "logger_capacity", LOGGER_CAPACITY_DEFAULT, 1, &logger_capacity) == -1) {
+    if (config_get_uint_arg(&config, "tetrisd_logger_capacity",
+                            LOGGER_CAPACITY_DEFAULT, 1, &logger_capacity) == -1) {
         DTOR_ERR_RETURN(errdtor, dtor, -1);
     }
 
     unsigned int client_capacity;
-    if (config_get_uint_arg(&config, "client_capacity", CLIENT_CAPACITY_DEFAULT,
+    if (config_get_uint_arg(&config, "tetrisd_client_capacity", CLIENT_CAPACITY_DEFAULT,
                             CLIENT_CAPACITY_MIN, &client_capacity) == -1) {
         DTOR_ERR_RETURN(errdtor, dtor, -1);
     }
@@ -164,9 +166,9 @@ int config_var_init(struct config_var* cfg_var) {
     }
     DTOR_INSERT(errdtor, free, log_ipc);
 
-    // an absent directive falls back to $PROJECT_DIR/tetrisd.sock so existing
-    // rc files keep working
-    char* control_ipc = config_get_path(&config, "control_ipc", project_dir);
+    // an absent directive falls back to $PROJECT_DIR/tetrisd.sock so rc files
+    // that omit it keep working
+    char* control_ipc = config_get_path(&config, "tetrisd_control_ipc", project_dir);
     if (control_ipc == NULL) {
         control_ipc = concat_path(project_dir, "tetrisd.sock");
         if (control_ipc == NULL) {

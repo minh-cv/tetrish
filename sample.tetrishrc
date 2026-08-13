@@ -3,5 +3,21 @@ PATH=/path/to/binary/directory:/usr/bin
 setenv BACKUP_DIR=tmp
 setenv PROJECT_DIR=/path/to/root/directory
 
-# tetrisd/tetrisctl admin control socket; defaults to $PROJECT_DIR/tetrisd.sock
-# control_ipc=tetrisd.sock
+# Required
+listen_port=4321
+log_path=var/log/tetrisd_log.txt
+log_ipc=var/socket/tetrislogd_logger
+cert_path=auth/server_signed.crt
+key_path=auth/private_key.pem
+ca_path=auth/cacsertificate.crt
+
+# Optional, default as shown
+tetrisd_address=localhost
+tetrisd_max_fds=1024
+tetrisd_max_player_fd=1008
+tetrisd_max_rooms=512
+tetrisd_room_tick_hz=60
+tetrisd_logger_reconnect_seconds=5
+tetrisd_client_capacity=8
+
+tetrislogd_max_clients=64

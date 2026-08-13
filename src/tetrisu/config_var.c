@@ -46,7 +46,7 @@ int config_var_init(struct config_var* cfg_var) {
         DTOR_ERR_RETURN(errdtor, dtor, -1);
     }
 
-    size_t address_idx = config_get_arg_idx(&config, "address");
+    size_t address_idx = config_get_arg_idx(&config, "tetrisd_address");
     char* address;
     if (address_idx == CONFIG_MAX_ARGS) {
         size_t address_length = strlen(ADDRESS_DEFAULT);

@@ -2,7 +2,7 @@
 
 `tetrisd` exposes an admin control plane on a Unix-domain socket
 (`SOCK_STREAM`), separate from the public TCP listener. `tetrisctl` is its
-client. The socket path is the `control_ipc` directive in
+client. The socket path is the `tetrisd_control_ipc` directive in
 `$PROJECT_DIR/.tetrishrc` (default: `$PROJECT_DIR/tetrisd.sock`); a relative
 path is resolved against `PROJECT_DIR`, like `log_ipc`.
 
@@ -49,25 +49,26 @@ tick — a client that pipelines is served one request per tick, not refused.
 ```
 
 `players_connected` and `players_authed` are bounded by `players_capacity`
-(`max_player_fd`). `fds_used` counts every epoll-registered fd, including both
-listeners and any control connection, and is bounded by `fds_capacity`, the
-effective (possibly rlimit-clamped) `max_fds`.
+(`tetrisd_max_player_fd`). `fds_used` counts every epoll-registered fd,
+including both listeners and any control connection, and is bounded by
+`fds_capacity`, the effective (possibly rlimit-clamped) `tetrisd_max_fds`.
 
 Reload re-applies only directives that need no reallocation of live state, and
 `config_var.h` is the authoritative list. `cert_path` and `key_path` are
 replaced validate-then-swap, so a connection mid-handshake fails and reconnects
 while established sessions are unaffected. `log_ipc` and
-`logger_reconnect_seconds` take effect at the logger's next reconnect.
-`client_capacity` and `max_player_fd` apply to connections accepted after the
-reload — live ones keep the sizes they were accepted with, see `layers.md` —
-and `room_tick_hz` applies at the next room tick.
+`tetrisd_logger_reconnect_seconds` take effect at the logger's next reconnect.
+`tetrisd_client_capacity` and `tetrisd_max_player_fd` apply to connections
+accepted after the reload — live ones keep the sizes they were accepted with,
+see `layers.md` — and `tetrisd_room_tick_hz` applies at the next room tick.
 
-Everything that sizes a table or binds a socket requires a restart: `max_fds`,
-`max_events`, `max_rooms`, `logger_capacity`, `listen_port`, `address`,
-`control_ipc`. A reload that fails validation logs a warning and leaves the
-running config untouched, including a `max_player_fd` that exceeds `max_fds`;
-one that passes is still clamped to the running `max_fds`, since the rlimit
-clamp runs only at startup.
+Everything that sizes a table or binds a socket requires a restart:
+`tetrisd_max_fds`, `tetrisd_max_events`, `tetrisd_max_rooms`,
+`tetrisd_logger_capacity`, `listen_port`, `tetrisd_address`,
+`tetrisd_control_ipc`. A reload that fails validation logs a warning and leaves
+the running config untouched, including a `tetrisd_max_player_fd` that exceeds
+`tetrisd_max_fds`; one that passes is still clamped to the running
+`tetrisd_max_fds`, since the rlimit clamp runs only at startup.
 
 ## tetrisctl
 
@@ -75,7 +76,7 @@ clamp runs only at startup.
 tetrisctl [--socket PATH] [--timeout MS] [--raw] <status|shutdown|reload>
 ```
 
-Reads `control_ipc` from `$PROJECT_DIR/.tetrishrc` unless `--socket` overrides
+Reads `tetrisd_control_ipc` from `$PROJECT_DIR/.tetrishrc` unless `--socket` overrides
 it, sends one framed request, prints the response body, and exits. The body is
 pretty-printed JSON by default; `--raw` writes it byte-exact with no added
 newline, so it can be piped to a hash or a parser and match what the daemon
@@ -116,7 +117,8 @@ listener is being flooded"):
    (`acceptor.c`) while the epoll table is sized `cfg.max_fds`, clamped to
    `RLIMIT_NOFILE` in `server_init`. The gap between the two is the reservation:
    it is what a control `accept(2)` draws on once the player table is full. The
-   gap is the operator's to configure — set `max_player_fd` equal to `max_fds`
+   gap is the operator's to configure — set `tetrisd_max_player_fd` equal to
+   `tetrisd_max_fds`
    and control accepts start failing as soon as players fill the table, which
    `Control_accept` reports and survives rather than treating as fatal.
 4. **No crypto.** Control requests skip the tetrissh handshake, so a flood of
