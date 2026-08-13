@@ -88,6 +88,16 @@ target_include_directories(sys PRIVATE src/tetrish)
 add_executable(hash src/tetrish/system_programs/hash.c)
 set_target_properties(hash PROPERTIES OUTPUT_NAME "#")
 
+find_package(Doxygen QUIET)
+if(DOXYGEN_FOUND)
+    add_custom_target(docs
+        COMMAND ${DOXYGEN_EXECUTABLE} ${CMAKE_SOURCE_DIR}/Doxyfile
+        WORKING_DIRECTORY ${CMAKE_SOURCE_DIR}
+        COMMENT "Generating API documentation with Doxygen (output in docs/doxygen/html)"
+        VERBATIM
+    )
+endif()
+
 install(
     TARGETS
         tetrisbrain

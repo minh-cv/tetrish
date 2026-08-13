@@ -13,4 +13,5 @@ tmp/
 compile_commands.json
 .tetrishrc
 archive/
-.claude/
+docs/doxygen/
+docs/doxygen_warnings.log
