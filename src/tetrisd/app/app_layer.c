@@ -4,6 +4,7 @@
 #include "app/util.h"
 #include "dtor.h"
 #include "htttp.h"
+#include "logger.h"
 #include "proto.h"
 #include "type.h"
 #include <assert.h>
@@ -11,11 +12,14 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+#include <time.h>
+#include <unistd.h>
 
 static DTOR_WRAPPER_DEFINE(free)
 static DTOR_WRAPPER_DEFINE(SparseSet_Player_free)
 static DTOR_WRAPPER_DEFINE(SparseSet_Room_free)
 static DTOR_WRAPPER_DEFINE(SparseSet_bool_free)
+static DTOR_WRAPPER_DEFINE(Vec_GarbageEvent_free)
 
 /*!
     @see htttp_layer.c
@@ -57,6 +61,14 @@ int AppData_init(AppData* data, size_t max_entries, size_t max_rooms,
     DTOR_INSERT(errdtor, free, data->member_pool);
     data->max_players_per_room = max_players_per_room;
 
+    if (Vec_GarbageEvent_init(&data->garbage_events, max_rooms * max_players_per_room) == -1) {
+        DTOR_ERR_RETURN(errdtor, dtor, -1);
+    }
+    DTOR_INSERT(errdtor, Vec_GarbageEvent_free, &data->garbage_events);
+    rng_init(&data->garbage_rng, (uint64_t)time(NULL) ^ (uint64_t)getpid());
+    data->garbage_injected = 0;
+    data->garbage_dropped_no_target = 0;
+
     if (SparseSet_Room_init(&data->rooms, max_rooms) == -1) {
         DTOR_ERR_RETURN(errdtor, dtor, -1);
     }
@@ -80,6 +92,7 @@ int AppData_init(AppData* data, size_t max_entries, size_t max_rooms,
 }
 
 void AppData_free(AppData* data) {
+    Vec_GarbageEvent_free(&data->garbage_events);
     Vec_RoomIdx_free(&data->free_room_idxs);
     SparseSet_bool_free(&data->in_game_rooms);
     SparseSet_Room_free(&data->rooms);
@@ -311,8 +324,46 @@ static int make_state_request(const RoomMember* member, size_t room_idx, bool ro
     DTOR_RETURN(dtor, 0);
 }
 
+/*
+    The producer half of an attack: bank each member's accumulated outgoing
+    garbage as one event and zero the balance. The engine accumulates
+    outgoing rows as a negative garbage_balance at lock time; nothing else
+    ever drains the negative side, so this is the only producer. A room
+    whose game ended on this tick's frames emits nothing: its boards are
+    already meaningless.
+*/
+static void sweep_garbage(Room* room, size_t room_idx, Vec_GarbageEvent* m_garbage_events) {
+    if (room->status != ROOM_IN_GAME) {
+        return;
+    }
+    for (size_t i = 0; i < room->member_count; i++) {
+        RoomMember* member = &room->members[i];
+        if (!member->alive || member->game.garbage_balance >= 0) {
+            continue;
+        }
+
+        int lines = -member->game.garbage_balance;
+        member->game.garbage_balance = 0;
+        if (lines > UINT16_MAX) {
+            lines = UINT16_MAX;
+        }
+        const GarbageEvent event = {
+            .version = GARBAGE_EVENT_VERSION,
+            .cross_room = room->config.cross_room_garbage ? 1 : 0,
+            .n_lines = (uint16_t)lines,
+            .source_fd = member->fd,
+            .source_room_idx = (uint32_t)room_idx,
+            .seq = 0,
+        };
+        const int err = Vec_GarbageEvent_push_back(m_garbage_events, &event);
+        assert(err != -1 && "garbage_events holds one event per seat");
+        (void)err;
+    }
+}
+
 void AppData_room_tick(AppData* data, uint64_t expirations,
                        SparseSet_HtttpOutboundMessageQueue* m_response_qs,
+                       Vec_GarbageEvent* m_garbage_events,
                        SparseSet_bool* err_fds) {
     if (expirations == 0) {
         return;
@@ -328,6 +379,8 @@ void AppData_room_tick(AppData* data, uint64_t expirations,
         for (uint64_t f = 0; f < expirations && room->status == ROOM_IN_GAME; f++) {
             room_tick(data, room_idx);
         }
+
+        sweep_garbage(room, room_idx, m_garbage_events);
 
         const bool room_in_game = room->status == ROOM_IN_GAME;
         for (size_t m = 0; m < room->member_count; m++) {
@@ -352,4 +405,119 @@ void AppData_room_tick(AppData* data, uint64_t expirations,
             }
         }
     }
+}
+
+//! @brief a random living opponent in the event's own room, or NULL
+static RoomMember* pick_same_room(AppData* data, const GarbageEvent* event) {
+    const size_t room_idx = event->source_room_idx;
+    if (room_idx >= data->rooms.capacity ||
+        !SparseSet_Room_contains(&data->rooms, room_idx)) {
+        return NULL;
+    }
+    Room* room = SparseSet_Room_get(&data->rooms, room_idx);
+    if (room->status != ROOM_IN_GAME) {
+        return NULL;
+    }
+
+    int count = 0;
+    for (size_t i = 0; i < room->member_count; i++) {
+        const RoomMember* member = &room->members[i];
+        if (member->alive && member->fd != event->source_fd) {
+            count++;
+        }
+    }
+    if (count == 0) {
+        return NULL;
+    }
+
+    int pick = rng_below(&data->garbage_rng, count);
+    for (size_t i = 0; i < room->member_count; i++) {
+        RoomMember* member = &room->members[i];
+        if (member->alive && member->fd != event->source_fd && pick-- == 0) {
+            return member;
+        }
+    }
+    assert(false && "the counted candidate must be found again");
+    return NULL;
+}
+
+/*!
+    @brief a random living member of a room that is not the event's own and
+           also opted into cross-room garbage, or NULL
+
+    Cross-room garbage only travels between such rooms: an isolated room
+    never receives what it could never send.
+*/
+static RoomMember* pick_cross_room(AppData* data, const GarbageEvent* event) {
+    int count = 0;
+    for (size_t r = 0; r < SparseSet_bool_size(&data->in_game_rooms); r++) {
+        const size_t room_idx = SparseSet_bool_key_at_idx(&data->in_game_rooms, r);
+        if (room_idx == event->source_room_idx) {
+            continue;
+        }
+        const Room* room = SparseSet_Room_get(&data->rooms, room_idx);
+        if (!room->config.cross_room_garbage) {
+            continue;
+        }
+        for (size_t i = 0; i < room->member_count; i++) {
+            const RoomMember* member = &room->members[i];
+            if (member->alive && member->fd != event->source_fd) {
+                count++;
+            }
+        }
+    }
+    if (count == 0) {
+        return NULL;
+    }
+
+    int pick = rng_below(&data->garbage_rng, count);
+    for (size_t r = 0; r < SparseSet_bool_size(&data->in_game_rooms); r++) {
+        const size_t room_idx = SparseSet_bool_key_at_idx(&data->in_game_rooms, r);
+        if (room_idx == event->source_room_idx) {
+            continue;
+        }
+        Room* room = SparseSet_Room_get(&data->rooms, room_idx);
+        if (!room->config.cross_room_garbage) {
+            continue;
+        }
+        for (size_t i = 0; i < room->member_count; i++) {
+            RoomMember* member = &room->members[i];
+            if (member->alive && member->fd != event->source_fd && pick-- == 0) {
+                return member;
+            }
+        }
+    }
+    assert(false && "the counted candidate must be found again");
+    return NULL;
+}
+
+void AppData_apply_garbage(AppData* data, const Vec_GarbageEvent* events) {
+    for (size_t i = 0; i < Vec_GarbageEvent_size(events); i++) {
+        const GarbageEvent* event = Vec_GarbageEvent_at(events, i);
+        if (event->version != GARBAGE_EVENT_VERSION) {
+            data->garbage_dropped_no_target++;
+            LOGGER_LOG(LOG_WARN, "garbage", "event seq=%u dropped, version %u unknown",
+                       event->seq, event->version);
+            continue;
+        }
+
+        RoomMember* target = event->cross_room
+            ? pick_cross_room(data, event)
+            : pick_same_room(data, event);
+        if (target == NULL) {
+            data->garbage_dropped_no_target++;
+            LOGGER_LOG(LOG_INFO, "garbage", "event seq=%u from fd=%d dropped, no target",
+                       event->seq, event->source_fd);
+            continue;
+        }
+
+        queue_garbage(&target->game, (int)event->n_lines);
+        data->garbage_injected++;
+        LOGGER_LOG(LOG_INFO, "garbage", "event seq=%u fd=%d -> fd=%d, %u lines",
+                   event->seq, event->source_fd, target->fd, event->n_lines);
+    }
+}
+
+void AppData_reset(AppData* data) {
+    Vec_GarbageEvent_reset(&data->garbage_events);
 }

@@ -398,7 +398,11 @@ int server_tick(Server* server) {
                    (unsigned long long)(server->room_timer.expirations - 1));
     }
     AppData_room_tick(&server->app, server->room_timer.expirations,
-                      &server->htttp.response_qs, &server->epoll.player_close_fds);
+                      &server->htttp.response_qs, &server->app.garbage_events,
+                      &server->epoll.player_close_fds);
+    // the local leg of the garbage pipeline; the IPC queue replaces this
+    // direct hand-off
+    AppData_apply_garbage(&server->app, &server->app.garbage_events);
 
     HtttpData_serialize(&server->htttp, &server->htttp.response_qs, &server->auth.encrypt_qs,
                         &server->epoll.player_close_fds);
@@ -431,6 +435,7 @@ int server_tick(Server* server) {
     Epoll_close(&server->epoll, &server->epoll.control_close_fds);
 
     Acceptor_reset(&server->acceptor);
+    AppData_reset(&server->app);
     PlayerIo_reset(&server->player_io);
     AuthData_reset(&server->auth);
     HtttpData_reset(&server->htttp);

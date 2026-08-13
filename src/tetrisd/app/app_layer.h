@@ -1,8 +1,10 @@
 #ifndef TETRISH_TETRISD_APP_LAYER_H
 #define TETRISH_TETRISD_APP_LAYER_H
 
+#include "app/garbage_event.h"
 #include "htttp_layer.h"
 #include "tetrisbrain/input.h"
+#include "tetrisbrain/rng.h"
 #include "tetrisbrain/state.h"
 #include "type.h"
 #include <stdint.h>
@@ -146,6 +148,22 @@ typedef struct {
     */
     RoomMember* member_pool;
     size_t max_players_per_room;
+
+    /*!
+        @brief per-tick output: the attacks the tick's line clears produced
+
+        Consumed by the garbage queue after the tick and reclaimed by
+        AppData_reset. Sized one event per seat, the most one tick can
+        produce.
+    */
+    Vec_GarbageEvent garbage_events;
+
+    //! @brief routing randomness; never a game's RNG, which its seed owns
+    Rng garbage_rng;
+
+    //! @brief attacks delivered, and attacks with nobody to hit
+    uint64_t garbage_injected;
+    uint64_t garbage_dropped_no_target;
 } AppData;
 
 /*!
@@ -307,7 +325,30 @@ void AppData_room_tick(
     AppData* data,
     uint64_t expirations,
     SparseSet_HtttpOutboundMessageQueue* m_response_qs,
+    Vec_GarbageEvent* m_garbage_events,
     SparseSet_bool* err_fds
 );
+
+/*!
+    @brief route each attack of @p events to a board and queue its rows
+           there
+
+    Routing happens here, at delivery: a same-room attack hits a random
+    living opponent in the source room, a cross-room attack hits a random
+    living member of a *different* room that also opted into cross-room
+    garbage. An attack with no such target, or whose version is not
+    @c GARBAGE_EVENT_VERSION , is dropped and counted; garbage is a
+    best-effort attack, not guaranteed delivery.
+
+    The rows land through the game's own intake: they surface on the
+    target's board at their next spawn.
+
+    @post @c garbage_injected and @c garbage_dropped_no_target have grown
+          by the delivered and dropped counts
+*/
+void AppData_apply_garbage(AppData* data, const Vec_GarbageEvent* events);
+
+//! @brief return per-tick output state to empty; part of the tick's reset fan-out
+void AppData_reset(AppData* data);
 
 #endif
