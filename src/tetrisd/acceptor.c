@@ -1,5 +1,4 @@
 #include "acceptor.h"
-#include "control.h"
 #include "logger.h"
 #include "socket.h"
 #include <arpa/inet.h>
