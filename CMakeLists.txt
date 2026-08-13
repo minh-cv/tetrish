@@ -1,6 +1,8 @@
 cmake_minimum_required(VERSION 3.10)
 project(tetrish LANGUAGES C)
 
+include(CTest)
+
 option(TETRISH_DEV_MODE "Enable dev-mode macros" OFF)
 option(TETRISH_TETRISD_NO_DAEMON "Disable daemonization of tetrisd" ${TETRISH_DEV_MODE})
 option(TETRISH_TETRISLOGD_NO_DAEMON "Disable daemonization of tetrislogd" ${TETRISH_DEV_MODE})
@@ -40,12 +42,11 @@ target_link_libraries(tetrisctl PRIVATE config htttp tetrissh cjson)
 
 add_executable(tetrisd src/tetrisd/main.c src/tetrisd/server.c src/tetrisd/config_var.c src/tetrisd/sig.c src/tetrisd/socket.c src/tetrisd/acceptor.c src/tetrisd/epoll.c src/tetrisd/player_io.c src/tetrisd/auth.c src/tetrisd/htttp_layer.c src/tetrisd/app/app_layer.c src/tetrisd/app/dispatch.c src/tetrisd/app/room.c src/tetrisd/control.c src/tetrisd/logger_layer.c src/tetrisd/room_timer.c)
 
-target_include_directories(tetrisd PRIVATE src/tetrisd)
+target_include_directories(tetrisd PRIVATE src/tetrisd include)
 target_link_libraries(tetrisd PRIVATE daemon logger network common tetrissh config htttp tetrisbrain proto)
 target_compile_definitions(tetrisd PRIVATE
     $<$<BOOL:${TETRISH_TETRISD_NO_DAEMON}>:TETRISH_TETRISD_NO_DAEMON>
 )
-target_include_directories(tetrisd PRIVATE include)
 
 add_executable(tetrislogd src/tetrislogd/main.c
     src/tetrislogd/config_var.c)
@@ -55,11 +56,63 @@ target_compile_definitions(tetrislogd PRIVATE
     $<$<BOOL:${TETRISH_TETRISLOGD_NO_DAEMON}>:TETRISH_TETRISLOGD_NO_DAEMON>
 )
 
-add_executable(tetrisu src/tetrisu/main.c
-    src/tetrisu/config_var.c)
+set(TETRISU_NET_SOURCES
+    src/tetrisu/net/client.c
+    src/tetrisu/net/event.c
+    src/tetrisu/net/htttp_codec.c
+    src/tetrisu/net/inbound_policy.c
+    src/tetrisu/net/message.c
+    src/tetrisu/net/socket_transport.c
+    src/tetrisu/net/tetrissh_channel.c)
+
+set(TETRISU_SOURCES
+    src/tetrisu/app.c
+    src/tetrisu/command/parser.c
+    src/tetrisu/command/router.c
+    src/tetrisu/config_var.c
+    ${TETRISU_NET_SOURCES}
+    src/tetrisu/ui/terminal.c)
+
+add_executable(tetrisu src/tetrisu/main.c ${TETRISU_SOURCES})
 target_include_directories(tetrisu PRIVATE src/tetrisu)
-target_link_libraries(tetrisu PRIVATE cjson htttp common tetrissh config)
+target_link_libraries(tetrisu PRIVATE htttp common tetrissh config corestack::tui)
 target_include_directories(tetrisu PRIVATE include)
+
+if(BUILD_TESTING)
+    add_executable(tetrisu_unit_tests
+        tests/tetrisu/test_unit.c
+        src/tetrisu/app.c
+        src/tetrisu/command/parser.c
+        src/tetrisu/command/router.c
+        src/tetrisu/net/event.c
+        src/tetrisu/net/htttp_codec.c
+        src/tetrisu/net/inbound_policy.c
+        src/tetrisu/net/message.c)
+    target_include_directories(tetrisu_unit_tests PRIVATE src/tetrisu)
+    target_link_libraries(tetrisu_unit_tests PRIVATE htttp)
+    add_test(NAME tetrisu_unit_tests COMMAND tetrisu_unit_tests)
+
+    add_executable(tetrisu_system_probe
+        tests/tetrisu/system_probe.c
+        ${TETRISU_NET_SOURCES})
+    target_include_directories(tetrisu_system_probe PRIVATE src/tetrisu)
+    target_link_libraries(tetrisu_system_probe PRIVATE htttp common tetrissh)
+
+    find_program(TETRISH_BASH_EXECUTABLE bash)
+    find_program(TETRISH_OPENSSL_EXECUTABLE openssl)
+    if(TETRISH_BASH_EXECUTABLE AND TETRISH_OPENSSL_EXECUTABLE)
+        add_test(
+            NAME tetrisu_server_system
+            COMMAND
+                ${TETRISH_BASH_EXECUTABLE}
+                ${CMAKE_CURRENT_SOURCE_DIR}/tests/tetrisu/server_system_test.sh
+                $<TARGET_FILE:tetrisd>
+                $<TARGET_FILE:tetrislogd>
+                $<TARGET_FILE:tetrisu_system_probe>
+                ${TETRISH_OPENSSL_EXECUTABLE})
+        set_tests_properties(tetrisu_server_system PROPERTIES TIMEOUT 30)
+    endif()
+endif()
 
 add_library(perms src/tetrish/libs/perms.c)
 target_include_directories(perms PUBLIC src/tetrish)

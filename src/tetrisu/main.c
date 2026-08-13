@@ -1,242 +1,277 @@
-#include "cJSON.h"
-#include "common.h"
+#include "app.h"
 #include "config_var.h"
-#include "htttp.h"
-#include <arpa/inet.h>
-#include <assert.h>
-#include <netdb.h>
-#include <netinet/in.h>
-#include <openssl/x509.h>
-#include <sched.h>
+#include "net/client.h"
+#include "ui/terminal.h"
+
+#include <errno.h>
+#include <poll.h>
+#include <signal.h>
 #include <stdbool.h>
 #include <stdint.h>
 #include <stdio.h>
-#include <stdlib.h>
 #include <string.h>
-#include <sys/socket.h>
-#include <sys/types.h>
+#include <time.h>
 #include <unistd.h>
-#include "tetrissh.h"
 
-#include <dtor.h>
+static volatile sig_atomic_t stop_requested = 0;
 
-#define MAX_MESSAGE_SIZE 4096
-
-static DTOR_WRAPPER_DEFINE(free)
-static DTOR_WRAPPER_DEFINE(cJSON_Delete)
-
-static int htttp_loop(int fd, const char* buf, size_t buf_len, SessionKey* shared_key) {
-    (void)buf_len;
-
-    DTOR_DEFINE(dtor, 10);
-    cJSON* const json = cJSON_CreateStringReference(buf);
-    if (json == NULL) {
-        fprintf(stderr, "Cannot malloc\n");
-        DTOR_RETURN(dtor, -1);
-    }
-    DTOR_INSERT(dtor, cJSON_Delete, json);
-
-    char* const json_buf = cJSON_Print(json);
-    if (json_buf == NULL) {
-        fprintf(stderr, "Cannot encode json\n");
-        DTOR_RETURN(dtor, -1);
-    }
-    DTOR_INSERT(dtor, free, json_buf);
-
-    size_t json_len = strlen(json_buf);
-    char json_len_buf[32] = {0};
-    int val_buf_written = snprintf(json_len_buf, sizeof(json_len_buf), "%zu", json_len);
-    if ((size_t)val_buf_written >= sizeof(json_len_buf) || val_buf_written < 0) {
-        fprintf(stderr, "Message too big\n");
-        DTOR_RETURN(dtor, -1);
-    }
-
-    HtttpMessage message = {
-        .request = {
-            "SET_PLAYER_NAME", 
-            "",
-            {
-                {
-                    "Content-Length",
-                    json_len_buf,
-                },
-                {
-                    "Content-Type",
-                    "application/tetris-command",
-                },
-            },
-            2,
-            (const unsigned char*)json_buf,
-            json_len,
-        },
-        .is_request = true,
-    };
-
-    size_t message_buf_length;
-    unsigned char* const message_buf = htttp_serialize(&message, &message_buf_length);
-    if (message_buf == NULL) {
-        DTOR_RETURN(dtor, -1);
-    }
-    DTOR_INSERT(dtor, free, message_buf);
-
-    if (message_buf_length > UINT32_MAX) {
-        DTOR_RETURN(dtor, -1);
-    }
-
-    if (tetrish_send_frame(fd, message_buf, (uint32_t)message_buf_length, shared_key) == -1) {
-        DTOR_RETURN(dtor, -1);
-    }
-
-    DTOR_RETURN(dtor, 0);
+static void request_stop(int signal_number) {
+    (void)signal_number;
+    stop_requested = 1;
 }
 
-int htttp_receive(int fd, HtttpMessage* message, unsigned char (*shared_key)[SESSION_KEY_LEN], unsigned char** msg_buf) {
-    DTOR_DEFINE(dtor, 10);
-    uint32_t length;
-    unsigned char* msg = tetrish_recv_frame(fd, &length, shared_key);
-    if (msg == NULL) {
-        fprintf(stderr, "cannot decrypt message");
-        DTOR_RETURN(dtor, -1);
+static uint64_t monotonic_ms(void) {
+    struct timespec time;
+    if (clock_gettime(CLOCK_MONOTONIC, &time) == -1) {
+        return 0;
     }
-    
-    if (htttp_parse(msg, length, message) == -1) {
-        fprintf(stderr, "cannot parse message");
-        free(msg);
-        DTOR_RETURN(dtor, -1);
-    }
-
-    *msg_buf = msg;    
-    DTOR_RETURN(dtor, 0);
+    return (uint64_t)time.tv_sec * 1000u + (uint64_t)time.tv_nsec / 1000000u;
 }
 
-static DTOR_WRAPPER_DEFINE(config_var_free)
+typedef struct {
+    AppState* app;
+    NetClient* net;
+    bool* running;
+} Runtime;
 
-static void close_ptr(int* fd) {
-    close(*fd);
+static int dispatch_app_event(Runtime* runtime, const AppEvent* event, uint64_t now_ms);
+
+static int dispatch_net_events(Runtime* runtime, NetEventList* events, uint64_t now_ms) {
+    for (size_t i = 0; i < events->count; ++i) {
+        const AppEvent event = {
+            .type = APP_EVENT_NETWORK,
+            .data.network = &events->items[i],
+        };
+        if (dispatch_app_event(runtime, &event, now_ms) == -1) {
+            return -1;
+        }
+    }
+    return 0;
 }
 
-static DTOR_WRAPPER_DEFINE(close_ptr)
-static DTOR_WRAPPER_DEFINE(freeaddrinfo)
-
-static int prepare_socket(int port, const char* address) {
-    DTOR_DEFINE(dtor, 10);
-    
-    struct addrinfo hints = {0};
-    hints.ai_family = AF_INET;
-    hints.ai_socktype = SOCK_STREAM;
-
-    char port_str[6];
-    snprintf(port_str, sizeof(port_str), "%d", port);    
-
-    struct addrinfo* res;
-    int rc = getaddrinfo(address, port_str, &hints, &res);
-    if (rc != 0) {
-        fprintf(stderr, "getaddrinfo: %s\n", gai_strerror(rc));
-        DTOR_RETURN(dtor, -1);
+static int execute_effect(
+    Runtime* runtime,
+    const AppEffect* effect,
+    uint64_t now_ms
+) {
+    if (effect->type == APP_EFFECT_QUIT) {
+        *runtime->running = false;
+        return 0;
     }
-    DTOR_INSERT(dtor, freeaddrinfo, res);
 
-    for (struct addrinfo* p = res; p != NULL; p = p->ai_next) {
-        int listen_fd = socket(p->ai_family, p->ai_socktype, p->ai_protocol);
+    NetEventList events;
+    net_event_list_init(&events);
+    int result = 0;
+    switch (effect->type) {
+    case APP_EFFECT_NET_CONNECT:
+        result = net_client_connect(runtime->net, now_ms, &events);
+        break;
+    case APP_EFFECT_NET_SEND: {
+        const ClientRequest request = {
+            .method = effect->method,
+            .path = effect->path,
+            .body = effect->payload.ptr,
+            .body_len = effect->payload.len,
+            .content_type = effect->content_type,
+        };
+        result = net_client_send_request(
+            runtime->net,
+            &request,
+            now_ms,
+            &events
+        );
+        break;
+    }
+    case APP_EFFECT_NET_DISCONNECT:
+        result = net_client_disconnect(runtime->net, &events);
+        break;
+    case APP_EFFECT_QUIT:
+        break;
+    }
+    if (result == 0) {
+        result = dispatch_net_events(runtime, &events, now_ms);
+    }
+    net_event_list_free(&events);
+    return result;
+}
 
-        if (listen_fd == -1) {
-            perror("socket");
-            continue;
+static int dispatch_app_event(Runtime* runtime, const AppEvent* event, uint64_t now_ms) {
+    AppEffectList effects;
+    app_effect_list_init(&effects);
+    int result = app_reduce(runtime->app, event, &effects);
+    for (size_t i = 0; result == 0 && i < effects.count; ++i) {
+        result = execute_effect(runtime, &effects.items[i], now_ms);
+    }
+    app_effect_list_free(&effects);
+    return result;
+}
+
+static int handle_network_poll(
+    Runtime* runtime,
+    short revents,
+    uint64_t now_ms
+) {
+    NetEventList events;
+    net_event_list_init(&events);
+    int result = net_client_on_poll(runtime->net, revents, now_ms, &events);
+    if (result == 0) {
+        result = dispatch_net_events(runtime, &events, now_ms);
+    }
+    net_event_list_free(&events);
+    return result;
+}
+
+static int handle_network_timeout(Runtime* runtime, uint64_t now_ms) {
+    NetEventList events;
+    net_event_list_init(&events);
+    int result = net_client_on_timeout(runtime->net, now_ms, &events);
+    if (result == 0) {
+        result = dispatch_net_events(runtime, &events, now_ms);
+    }
+    net_event_list_free(&events);
+    return result;
+}
+
+static int install_signal_handlers(void) {
+    struct sigaction action;
+    memset(&action, 0, sizeof(action));
+    action.sa_handler = request_stop;
+    sigemptyset(&action.sa_mask);
+    return sigaction(SIGINT, &action, NULL) == -1 ||
+        sigaction(SIGTERM, &action, NULL) == -1
+        ? -1
+        : 0;
+}
+
+int main(void) {
+    struct config_var config;
+    if (config_var_init(&config) == -1) {
+        return 1;
+    }
+    if (install_signal_handlers() == -1) {
+        config_var_free(&config);
+        return 1;
+    }
+
+    TerminalUi ui;
+    if (terminal_ui_init(&ui) == -1) {
+        fprintf(stderr, "tetrisu requires an interactive terminal\n");
+        config_var_free(&config);
+        return 1;
+    }
+
+    AppState app;
+    app_init(&app);
+    NetClient net;
+    net_client_init(&net, config.address, config.port, config.ca_path);
+    bool running = true;
+    Runtime runtime = {.app = &app, .net = &net, .running = &running};
+    bool failed = false;
+
+    const AppEvent start = {.type = APP_EVENT_START};
+    if (dispatch_app_event(&runtime, &start, monotonic_ms()) == -1) {
+        failed = true;
+        running = false;
+    }
+
+    UiCommandList initial_commands;
+    ui_command_list_init(&initial_commands);
+    if (running && terminal_ui_poll_input(&ui) == -1) {
+        failed = true;
+        running = false;
+    }
+    if (running) {
+        terminal_ui_update(&ui, &initial_commands);
+    }
+    ui_command_list_free(&initial_commands);
+    if (running) {
+        AppView view;
+        app_build_view(&app, &view);
+        terminal_ui_draw(&ui, &view);
+        if (terminal_ui_present(&ui) == -1) {
+            failed = true;
+            running = false;
+        }
+        app.view_dirty = false;
+    }
+
+    while (running && !stop_requested) {
+        struct pollfd descriptors[2];
+        descriptors[0] = (struct pollfd){.fd = STDIN_FILENO, .events = POLLIN};
+        nfds_t descriptor_count = 1;
+        const int network_fd = net_client_fd(&net);
+        if (network_fd >= 0) {
+            descriptors[1] = (struct pollfd){
+                .fd = network_fd,
+                .events = net_client_poll_events(&net),
+            };
+            descriptor_count = 2;
         }
 
-        if (connect(listen_fd, p->ai_addr, p->ai_addrlen) == -1) {
-            perror("connect");
-            close(listen_fd);
-            continue;
+        const uint64_t before_poll = monotonic_ms();
+        const int timeout_ms = net_client_timeout_ms(&net, before_poll);
+        const int ready_count = poll(descriptors, descriptor_count, timeout_ms);
+        const int poll_error = ready_count == -1 ? errno : 0;
+        const uint64_t now_ms = monotonic_ms();
+        if (ready_count == -1 && poll_error != EINTR) {
+            failed = true;
+            break;
         }
-
-        DTOR_RETURN(dtor, listen_fd);
-
-    }
-
-    fprintf(stderr, "cannot connect\n");
-    DTOR_RETURN(dtor, -1);
-}
-
-
-int main() {
-    DTOR_DEFINE(dtor, 10);
-
-    struct config_var cfg;
-    if (config_var_init(&cfg) == -1) {
-        DTOR_RETURN(dtor, 1);
-    }
-    DTOR_INSERT(dtor, config_var_free, &cfg);
-
-    int port = cfg.port;
-    const char* server_address = cfg.address;
-
-    int sockfd = prepare_socket(port, server_address);
-    if (sockfd == -1) {
-        DTOR_RETURN(dtor, 1);
-    }
-    DTOR_INSERT(dtor, close_ptr, &sockfd);
-
-    SessionKey shared_key;
-    if (tetrish_client_handshake(sockfd, cfg.ca_path, &shared_key) == -1) {
-        perror("handshake");
-        DTOR_RETURN(dtor, 1);
-    }
-
-    while (true) {
-        char line[MAX_MESSAGE_SIZE + 1] = {0};
-
-        printf("> ");
-        fflush(stdout);
-
-        if (fgets(line, sizeof(line), stdin) == NULL) {
+        if (stop_requested) {
+            break;
+        }
+        if (ready_count > 0 &&
+            (descriptors[0].revents & (POLLERR | POLLHUP | POLLNVAL)) != 0) {
+            break;
+        }
+        if (terminal_ui_poll_input(&ui) == -1) {
+            failed = true;
             break;
         }
 
-        size_t line_len = strlen(line);
-
-        if (line_len > 0 && line[line_len - 1] == '\n') {
-            line[line_len - 1] = '\0';
-            line_len--;
+        if (ready_count > 0 && descriptor_count == 2 && descriptors[1].revents != 0 &&
+            handle_network_poll(&runtime, descriptors[1].revents, now_ms) == -1) {
+            failed = true;
+            break;
         }
-
-        if (line_len == 0) {
-            continue;
-        }
-
-        if (line_len > MAX_MESSAGE_SIZE) {
-            fprintf(stderr, "message too large\n");
-            continue;
-        }
-
-        if (htttp_loop(sockfd, line, line_len, &shared_key) == -1) {
+        if (handle_network_timeout(&runtime, now_ms) == -1) {
+            failed = true;
             break;
         }
 
-        HtttpMessage reply;
-        unsigned char* reply_buf;
-        if (htttp_receive(sockfd, &reply, &shared_key, &reply_buf) == -1) {
-            break;
+        UiCommandList commands;
+        ui_command_list_init(&commands);
+        terminal_ui_update(&ui, &commands);
+        for (size_t i = 0; running && i < commands.count; ++i) {
+            const AppEvent event = {
+                .type = APP_EVENT_COMMAND_SUBMITTED,
+                .data.command = &commands.items[i],
+            };
+            if (dispatch_app_event(&runtime, &event, now_ms) == -1) {
+                failed = true;
+                running = false;
+            }
         }
+        ui_command_list_free(&commands);
 
-        if (reply.is_request) {
-            if (reply.request.body_len == 0) {
-                printf("Server request: %s %s (empty body)\n", reply.request.method, reply.request.path);
+        if (running && (app.view_dirty || ui.dirty)) {
+            AppView view;
+            app_build_view(&app, &view);
+            terminal_ui_draw(&ui, &view);
+            if (terminal_ui_present(&ui) == -1) {
+                failed = true;
+                break;
             }
-            else {
-                printf("Server request: %s %s %.*s\n", reply.request.method, reply.request.path, (int)reply.request.body_len, reply.request.body);
-            }
+            app.view_dirty = false;
         }
-        else {
-            if (reply.response.body_len == 0) {
-                printf("Server response: %d %s (empty body)\n", reply.response.status, reply.response.reason);
-            }
-            else {
-                printf("Server response: %d %s %.*s\n", reply.response.status, reply.response.reason, (int)reply.response.body_len, reply.response.body);
-            }
-        }
-        free(reply_buf);
     }
 
-    DTOR_RETURN(dtor, 0);
+    net_client_free(&net);
+    app_free(&app);
+    terminal_ui_free(&ui);
+    config_var_free(&config);
+    if (failed) {
+        fprintf(stderr, "tetrisu stopped after an internal terminal/client error\n");
+    }
+    return failed ? 1 : 0;
 }
