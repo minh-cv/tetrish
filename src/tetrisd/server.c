@@ -105,7 +105,7 @@ static void logger_tick(Server* server, const EpollSignals* signals) {
 }
 
 int server_init(Server* server) {
-    DTOR_DEFINE(errdtor, 10);
+    DTOR_DEFINE(errdtor, 12);
     DTOR_DEFINE(dtor, 1);
 
     if (config_var_init(&server->cfg) == -1) {
