@@ -64,6 +64,38 @@ int room_create(AppData* data, Fd fd, const RoomConfig* config, size_t* out_room
     return 0;
 }
 
+RoomJoinResult room_join(AppData* data, Fd fd, size_t room_idx) {
+    assert(fd >= 0 && SparseSet_Player_contains(&data->players, (size_t)fd));
+
+    Player* player = SparseSet_Player_get(&data->players, (size_t)fd);
+    if (player->room_idx != ROOM_IDX_NONE) {
+        return ROOM_JOIN_ALREADY_IN_ROOM;
+    }
+    // bounds before contains: the key comes off the wire, and contains
+    // asserts on out-of-range keys
+    if (room_idx >= data->rooms.capacity ||
+        !SparseSet_Room_contains(&data->rooms, room_idx)) {
+        return ROOM_JOIN_NO_SUCH_ROOM;
+    }
+
+    Room* room = SparseSet_Room_get(&data->rooms, room_idx);
+    if (room->status == ROOM_IN_GAME) {
+        return ROOM_JOIN_IN_GAME;
+    }
+    if (room->member_count >= room->config.max_players) {
+        return ROOM_JOIN_FULL;
+    }
+
+    RoomMember* seat = &room->members[room->member_count];
+    memset(seat, 0, sizeof(*seat));
+    seat->fd = fd;
+    room->member_count++;
+    player->room_idx = room_idx;
+    LOGGER_LOG(LOG_INFO, "room", "room=%zu joined by fd=%d, %zu members",
+               room_idx, fd, room->member_count);
+    return ROOM_JOIN_OK;
+}
+
 void room_start(AppData* data, size_t room_idx) {
     assert(SparseSet_Room_contains(&data->rooms, room_idx));
 

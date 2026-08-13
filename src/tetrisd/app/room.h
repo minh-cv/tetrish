@@ -31,6 +31,27 @@ RoomMember* room_find_member(Room* room, Fd fd);
 */
 int room_create(AppData* data, Fd fd, const RoomConfig* config, size_t* out_room_idx);
 
+typedef enum {
+    ROOM_JOIN_OK,
+    ROOM_JOIN_ALREADY_IN_ROOM,
+    ROOM_JOIN_NO_SUCH_ROOM,
+    ROOM_JOIN_FULL,
+    ROOM_JOIN_IN_GAME,
+} RoomJoinResult;
+
+/*!
+    @brief seat @p fd in the room keyed @p room_idx
+
+    @pre @p fd is a key in @c players
+
+    @post on @c ROOM_JOIN_OK , the room's next seat is @p fd 's and @p fd 's
+          @c room_idx is @p room_idx ; on anything else, nothing changed
+
+    @note @p room_idx comes off the wire, so any value is answered with
+          @c ROOM_JOIN_NO_SUCH_ROOM rather than asserted on.
+*/
+RoomJoinResult room_join(AppData* data, Fd fd, size_t room_idx);
+
 /*!
     @brief start the game of the room keyed @p room_idx
 

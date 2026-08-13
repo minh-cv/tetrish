@@ -1,11 +1,14 @@
 #include "app/dispatch.h"
 #include "app/room.h"
+#include "app/util.h"
+#include "cJSON.h"
 #include "htttp.h"
 #include "logger.h"
 #include "proto.h"
 #include "tetrisbrain/input.h"
 #include <assert.h>
 #include <stdbool.h>
+#include <stdint.h>
 #include <stdlib.h>
 #include <string.h>
 
@@ -60,6 +63,24 @@ static DispatchResult handle_method_not_allowed(HtttpOutboundMessage* outbound) 
     return respond(outbound, HTTTP_STATUS_METHOD_NOT_ALLOWED, NULL);
 }
 
+/*!
+    @brief build a response of @p status carrying @p body , heap-allocated
+           and handed over, or NULL for a failed allocation
+
+    @c htttp_make_default_response takes the body over on failure too, so
+    no path out of here leaves it to release.
+*/
+static DispatchResult respond_heap(HtttpOutboundMessage* outbound, HtttpStatus status, char* body) {
+    if (body == NULL) {
+        return respond(outbound, HTTTP_STATUS_INTERNAL_SERVER_ERROR, "Out of memory");
+    }
+    if (htttp_make_default_response(status, body, strlen(body), true,
+                                    &outbound->message.response, &outbound->ownership) == -1) {
+        return DISPATCH_ERR;
+    }
+    return DISPATCH_RESPOND;
+}
+
 //! @brief the record of @p fd , which the precondition guarantees exists
 static Player* get_player(const AppData* data, Fd fd) {
     assert(fd >= 0 && SparseSet_Player_contains(&data->players, (size_t)fd));
@@ -71,16 +92,188 @@ static size_t get_room_idx(const AppData* data, Fd fd) {
     return get_player(data, fd)->room_idx;
 }
 
-static DispatchResult handle_room_create(AppData* data, Fd fd, HtttpOutboundMessage* outbound) {
+//! @brief read an integral @p item within `[min, max]` into @p out
+static int json_read_int(const cJSON* item, int min, int max, int* out) {
+    if (!cJSON_IsNumber(item)) {
+        return -1;
+    }
+    const double value = item->valuedouble;
+    if (value < (double)min || value > (double)max) {
+        return -1;
+    }
+    const int as_int = (int)value;
+    if ((double)as_int != value) {
+        return -1;
+    }
+    *out = as_int;
+    return 0;
+}
+
+/*!
+    @brief read @p parsed 's JSON body into @p out
+
+    An absent or empty body is @c room_config_default() . Every key is
+    optional; an unknown key, a wrong type or an out-of-range value fails
+    with the key's name (a literal) in @p out_bad_key , and a body that is
+    not a JSON object at all fails with @p out_bad_key NULL.
+
+    @post on failure @p out is unspecified
+
+    @return -1 on failure, 0 otherwise
+*/
+static int parse_room_config(const AppData* data, const HtttpRequest* parsed,
+                             RoomConfig* out, const char** out_bad_key) {
+    *out = room_config_default();
+    *out_bad_key = NULL;
+    if (parsed->body == NULL || parsed->body_len == 0) {
+        return 0;
+    }
+
+    cJSON* root = cJSON_ParseWithLength((const char*)parsed->body, parsed->body_len);
+    if (root == NULL || !cJSON_IsObject(root)) {
+        cJSON_Delete(root);
+        return -1;
+    }
+
+    int result = 0;
+    int max_players = 1;
+    const cJSON* item = NULL;
+    cJSON_ArrayForEach(item, root) {
+        const char* key = item->string;
+        // out_bad_key gets these literals, never key: key lives in root
+        if (strcmp(key, "public") == 0) {
+            if (!cJSON_IsBool(item)) {
+                *out_bad_key = "public";
+            }
+            out->is_public = cJSON_IsTrue(item);
+        }
+        else if (strcmp(key, "max_players") == 0) {
+            if (json_read_int(item, 1, (int)data->max_players_per_room, &max_players) == -1) {
+                *out_bad_key = "max_players";
+            }
+            out->max_players = (size_t)max_players;
+        }
+        else if (strcmp(key, "cross_room_garbage") == 0) {
+            if (!cJSON_IsBool(item)) {
+                *out_bad_key = "cross_room_garbage";
+            }
+            out->cross_room_garbage = cJSON_IsTrue(item);
+        }
+        else if (strcmp(key, "shared_seed") == 0) {
+            if (!cJSON_IsBool(item)) {
+                *out_bad_key = "shared_seed";
+            }
+            out->shared_seed = cJSON_IsTrue(item);
+        }
+        else if (strcmp(key, "max_preview") == 0) {
+            if (json_read_int(item, 0, ROOM_PREVIEW_MAX, &out->max_preview) == -1) {
+                *out_bad_key = "max_preview";
+            }
+        }
+        else if (strcmp(key, "start_level") == 0) {
+            if (json_read_int(item, 0, 99, &out->brain.start_level) == -1) {
+                *out_bad_key = "start_level";
+            }
+        }
+        else if (strcmp(key, "frames_per_level_up") == 0) {
+            if (json_read_int(item, 0, 1000000000, &out->brain.frames_per_level_up) == -1) {
+                *out_bad_key = "frames_per_level_up";
+            }
+        }
+        else if (strcmp(key, "lock_delay_frames") == 0) {
+            if (json_read_int(item, 1, 10000, &out->brain.lock_counter_max) == -1) {
+                *out_bad_key = "lock_delay_frames";
+            }
+        }
+        else if (strcmp(key, "lock_moves") == 0) {
+            if (json_read_int(item, 0, 10000, &out->brain.lock_movement_counter_max) == -1) {
+                *out_bad_key = "lock_moves";
+            }
+        }
+        else {
+            *out_bad_key = "an unknown key";
+        }
+
+        if (*out_bad_key != NULL) {
+            result = -1;
+            break;
+        }
+    }
+    cJSON_Delete(root);
+    return result;
+}
+
+static DispatchResult handle_room_create(AppData* data, Fd fd, const HtttpRequest* parsed,
+                                         HtttpOutboundMessage* outbound) {
     if (get_room_idx(data, fd) != ROOM_IDX_NONE) {
         return respond(outbound, HTTTP_STATUS_CONFLICT, "Already in a room");
     }
 
+    RoomConfig config;
+    const char* bad_key = NULL;
+    if (parse_room_config(data, parsed, &config, &bad_key) == -1) {
+        if (bad_key == NULL) {
+            return respond(outbound, HTTTP_STATUS_BAD_REQUEST, "Body must be a JSON object");
+        }
+        return respond_heap(outbound, HTTTP_STATUS_BAD_REQUEST,
+                            malloc_sprintf("Invalid %s", bad_key));
+    }
+
     size_t room_idx;
-    if (room_create(data, fd, NULL, &room_idx) == -1) {
+    if (room_create(data, fd, &config, &room_idx) == -1) {
         return respond(outbound, HTTTP_STATUS_INTERNAL_SERVER_ERROR, "Room list full");
     }
-    return respond(outbound, HTTTP_STATUS_CREATED, NULL);
+    // the checkpoint flow is telling friends the room code, so hand it back
+    return respond_heap(outbound, HTTTP_STATUS_CREATED, malloc_sprintf("%zu", room_idx));
+}
+
+//! @brief read a path of exactly `/room/<digits>` into @p out_room_idx
+static int parse_room_path(const char* path, size_t* out_room_idx) {
+    static const char PREFIX[] = "/room/";
+    if (path == NULL || strncmp(path, PREFIX, sizeof(PREFIX) - 1) != 0) {
+        return -1;
+    }
+    const char* digits = path + sizeof(PREFIX) - 1;
+    if (*digits == '\0') {
+        return -1;
+    }
+    size_t value = 0;
+    for (const char* p = digits; *p != '\0'; p++) {
+        if (*p < '0' || *p > '9') {
+            return -1;
+        }
+        const size_t digit = (size_t)(*p - '0');
+        if (value > (SIZE_MAX - digit) / 10) {
+            return -1;
+        }
+        value = value * 10 + digit;
+    }
+    *out_room_idx = value;
+    return 0;
+}
+
+static DispatchResult handle_room_join(AppData* data, Fd fd, const HtttpRequest* parsed,
+                                       HtttpOutboundMessage* outbound) {
+    size_t room_idx;
+    if (parse_room_path(parsed->path, &room_idx) == -1) {
+        return respond(outbound, HTTTP_STATUS_BAD_REQUEST, "Path must be /room/<id>");
+    }
+
+    switch (room_join(data, fd, room_idx)) {
+    case ROOM_JOIN_OK:
+        return respond_heap(outbound, HTTTP_STATUS_OK, malloc_sprintf("%zu", room_idx));
+    case ROOM_JOIN_ALREADY_IN_ROOM:
+        return respond(outbound, HTTTP_STATUS_CONFLICT, "Already in a room");
+    case ROOM_JOIN_NO_SUCH_ROOM:
+        return respond(outbound, HTTTP_STATUS_NOT_FOUND, "No such room");
+    case ROOM_JOIN_FULL:
+        return respond(outbound, HTTTP_STATUS_CONFLICT, "Room full");
+    case ROOM_JOIN_IN_GAME:
+        return respond(outbound, HTTTP_STATUS_CONFLICT, "Game in progress");
+    default:
+        assert(false);
+        return DISPATCH_ERR;
+    }
 }
 
 static DispatchResult handle_room_start(AppData* data, Fd fd, HtttpOutboundMessage* outbound) {
@@ -141,17 +334,7 @@ static int parse_player_name(const HtttpRequest* parsed, char name[PLAYER_NAME_M
 static DispatchResult respond_player_name(const char* name, HtttpOutboundMessage* outbound) {
     // the body outlives this call, and the record it comes from does not:
     // the player may be closed before the response is serialized.
-    char* const body = strdup(name);
-    if (body == NULL) {
-        return respond(outbound, HTTTP_STATUS_INTERNAL_SERVER_ERROR, "Out of memory");
-    }
-
-    // takes the body over on failure too, so there is nothing to release here
-    if (htttp_make_default_response(HTTTP_STATUS_OK, body, strlen(body), true,
-                                    &outbound->message.response, &outbound->ownership) == -1) {
-        return DISPATCH_ERR;
-    }
-    return DISPATCH_RESPOND;
+    return respond_heap(outbound, HTTTP_STATUS_OK, strdup(name));
 }
 
 /*!
@@ -263,8 +446,9 @@ DispatchResult respond_one_request(AppData* data, Fd fd, const HtttpRequest* par
     const Method method = get_method(parsed->method);
     switch (method) {
     case METHOD_JOIN:
+        return handle_room_join(data, fd, parsed, outbound);
     case METHOD_CREATE:
-        return handle_room_create(data, fd, outbound);
+        return handle_room_create(data, fd, parsed, outbound);
     case METHOD_START:
         return handle_room_start(data, fd, outbound);
     case METHOD_MOVE:
