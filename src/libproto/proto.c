@@ -24,7 +24,7 @@ _Static_assert(INT_MAX == INT32_MAX && INT_MIN == INT32_MIN, "proto encodes int 
     Pins the layout table in proto.h. Adding a field to ProtoStateRequest fires
     this, and the table has to be updated with it.
 */
-_Static_assert(PROTO_STATE_REQUEST_BODY_LEN == 448, "proto.h layout table is stale");
+_Static_assert(PROTO_STATE_REQUEST_BODY_LEN == 452, "proto.h layout table is stale");
 
 //! @brief One past the last HoldStatus enumerator; the enum has no count member.
 #define HOLD_STATUS_COUNT (HOLD_ACTIVE + 1)
@@ -213,6 +213,7 @@ int proto_parse_state_request(const unsigned char* body, size_t body_len, ProtoS
 
     out.garbage_balance = get_i32(body, &off);
     out.back_to_back_count = get_i32(body, &off);
+    out.game_score = get_i32(body, &off);
 
     const unsigned char is_game_active = get_u8(body, &off);
     if (is_game_active > 1) {
@@ -256,6 +257,7 @@ void proto_encode_state_request(const ProtoStateRequest* state, unsigned char bo
 
     put_i32(body, &off, state->garbage_balance);
     put_i32(body, &off, state->back_to_back_count);
+    put_i32(body, &off, state->game_score);
     put_u8(body, &off, state->is_game_active ? 1u : 0u);
 
     assert(off == PROTO_STATE_REQUEST_BODY_LEN && "encoder disagrees with the layout table");

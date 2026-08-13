@@ -72,8 +72,8 @@
     the piece in play is `bag_state.bag1[bag_state.bag1_offset]` and the queue
     after it continues through @c bag1 then @c bag2 .
 
-    @note @c is_game_active has no counterpart in @c State ; the server fills
-          it from the room's status.
+    @note @c game_score and @c is_game_active have no counterpart in @c State ;
+          the server fills them from the room's scoring and status.
 */
 typedef struct {
     BoardState board_state;
@@ -82,6 +82,7 @@ typedef struct {
     BagState bag_state;
     int garbage_balance;
     int back_to_back_count;
+    int game_score;
     bool is_game_active;
 } ProtoStateRequest;
 
@@ -127,7 +128,8 @@ typedef enum {
     | 438 | 1   | `bag_state.bag1_offset` |
     | 439 | 4   | `garbage_balance` |
     | 443 | 4   | `back_to_back_count` |
-    | 447 | 1   | `is_game_active`, 0 or 1 |
+    | 447 | 4   | `game_score` |
+    | 451 | 1   | `is_game_active`, 0 or 1 |
 
     Every 4-byte field is a two's-complement big-endian `int32_t`; negative
     values are expected, since @c combo_counter and @c back_to_back_count
@@ -138,7 +140,7 @@ typedef enum {
 */
 #define PROTO_STATE_REQUEST_BODY_LEN                        \
     ((size_t)(BOARD_HEIGHT) * (size_t)(BOARD_WIDTH) + 2u + \
-     4u * 4u + 4u + 2u + 2u * (size_t)(TETROMINO_TYPE_COUNT) + 1u + 4u + 4u + 1u)
+     4u * 4u + 4u + 2u + 2u * (size_t)(TETROMINO_TYPE_COUNT) + 1u + 4u + 4u + 4u + 1u)
 
 /*!
     @brief Decode the body of a `STATE` request.
