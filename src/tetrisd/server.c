@@ -16,6 +16,7 @@ static DTOR_WRAPPER_DEFINE(PlayerIo_free)
 static DTOR_WRAPPER_DEFINE(AuthData_free)
 static DTOR_WRAPPER_DEFINE(HtttpData_free)
 static DTOR_WRAPPER_DEFINE(AppData_free)
+static DTOR_WRAPPER_DEFINE(RoomTimer_free)
 
 static DTOR_WRAPPER_DEFINE(Control_free)
 
@@ -171,6 +172,19 @@ int server_init(Server* server) {
         DTOR_ERR_RETURN(errdtor, dtor, -1);
     }
     DTOR_INSERT(errdtor, AppData_free, &server->app);
+
+    if (RoomTimer_init(&server->room_timer, server->cfg.room_tick_hz) == -1) {
+        DTOR_ERR_RETURN(errdtor, dtor, -1);
+    }
+    DTOR_INSERT(errdtor, RoomTimer_free, &server->room_timer);
+
+    // unlike the logger's, an unwatchable clock is fatal: no room could ever
+    // advance a frame without it
+    if ((size_t)server->room_timer.fd >= epoll_capacity) {
+        LOGGER_LOG(LOG_ERROR, "server", "room timer fd out of table range");
+        DTOR_ERR_RETURN(errdtor, dtor, -1);
+    }
+
     if (Control_init(&server->control, server->cfg.control_ipc) == -1) {
         DTOR_ERR_RETURN(errdtor, dtor, -1);
     }
@@ -189,6 +203,10 @@ int server_init(Server* server) {
         DTOR_ERR_RETURN(errdtor, dtor, -1);
     }
 
+    if (Epoll_accept_one(&server->epoll, server->room_timer.fd, EPOLL_ENTRY_ROOM_TIMERFD, EPOLLIN) == -1) {
+        DTOR_ERR_RETURN(errdtor, dtor, -1);
+    }
+
     // connect and flush what startup logged, rather than waiting for the first
     // epoll_wait to return, which on an idle server can be a long time
     const EpollSignals quiet = {0};
@@ -199,6 +217,7 @@ int server_init(Server* server) {
 
 void server_free(Server* server) {
     AppData_free(&server->app);
+    RoomTimer_free(&server->room_timer);
     // before Epoll_free (which closes control conn fds this layer references)
     // and before config_var_free (control.ipc_path points into cfg)
     Control_free(&server->control);
@@ -275,7 +294,9 @@ void server_reload_config(Server* server) {
 
     server->cfg.client_capacity = new_cfg.client_capacity;
     server->cfg.max_player_fd = new_cfg.max_player_fd;
-    server->cfg.room_tick_hz = new_cfg.room_tick_hz;
+    if (RoomTimer_reconfig(&server->room_timer, new_cfg.room_tick_hz) == 0) {
+        server->cfg.room_tick_hz = new_cfg.room_tick_hz;
+    }
     server->cfg.logger_reconnect_seconds = new_cfg.logger_reconnect_seconds;
     clamp_max_player_fd(&server->cfg);
 
@@ -360,9 +381,23 @@ int server_tick(Server* server) {
     HtttpData_parse(&server->htttp, &server->auth.decrypt_qs, &server->htttp.parsed_qs,
                     &server->epoll.player_close_fds);
 
-    // TODO: dummy application layer — replace the echo with real game logic
     AppData_respond(&server->app, &server->htttp.parsed_qs, &server->htttp.response_qs,
                     &server->epoll.player_close_fds);
+
+    // after the requests of this tick, so a key pressed and a frame due in the
+    // same tick apply in that order rather than a tick apart
+    bool clock_lost = false;
+    if (signals.room_timer_expired &&
+        RoomTimer_read(&server->room_timer, &server->room_timer.expirations) == -1) {
+        LOGGER_LOG(LOG_ERROR, "server", "the game clock is unreadable; stopping");
+        clock_lost = true;
+    }
+    if (server->room_timer.expirations > 1) {
+        LOGGER_LOG(LOG_WARN, "server", "the loop fell behind the clock by %llu ticks",
+                   (unsigned long long)(server->room_timer.expirations - 1));
+    }
+    AppData_room_tick(&server->app, server->room_timer.expirations,
+                      &server->htttp.response_qs, &server->epoll.player_close_fds);
 
     HtttpData_serialize(&server->htttp, &server->htttp.response_qs, &server->auth.encrypt_qs,
                         &server->epoll.player_close_fds);
@@ -398,6 +433,7 @@ int server_tick(Server* server) {
     PlayerIo_reset(&server->player_io);
     AuthData_reset(&server->auth);
     HtttpData_reset(&server->htttp);
+    RoomTimer_reset(&server->room_timer);
     Control_reset(&server->control);
     Epoll_reset(&server->epoll);
 
@@ -412,5 +448,5 @@ int server_tick(Server* server) {
 
     // last, so everything logged during the tick leaves in the same iteration
     logger_tick(server, &signals);
-    return actions.shutdown ? -1 : 0;
+    return (actions.shutdown || clock_lost) ? -1 : 0;
 }

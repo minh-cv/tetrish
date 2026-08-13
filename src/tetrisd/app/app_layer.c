@@ -266,8 +266,13 @@ static int make_state_request(const Room* room, HtttpOutboundMessage* outbound) 
     DTOR_RETURN(dtor, 0);
 }
 
-void AppData_room_tick(AppData* data, SparseSet_HtttpOutboundMessageQueue* m_response_qs,
+void AppData_room_tick(AppData* data, uint64_t expirations,
+                       SparseSet_HtttpOutboundMessageQueue* m_response_qs,
                        SparseSet_bool* err_fds) {
+    if (expirations == 0) {
+        return;
+    }
+
     for (size_t i = SparseSet_bool_size(&data->in_game_rooms); i-- > 0;) {
         const size_t room_idx = SparseSet_bool_key_at_idx(&data->in_game_rooms, i);
         Room* room = SparseSet_Room_get(&data->rooms, room_idx);
@@ -280,7 +285,11 @@ void AppData_room_tick(AppData* data, SparseSet_HtttpOutboundMessageQueue* m_res
             continue;
         }
 
-        room_tick(data, room_idx);
+        // the first frame is the one carrying the recorded inputs; room_tick
+        // clears them, so the catch-up frames advance on none
+        for (uint64_t f = 0; f < expirations && room->status == ROOM_IN_GAME; f++) {
+            room_tick(data, room_idx);
+        }
 
         HtttpOutboundMessage push;
         if (make_state_request(room, &push) == -1) {

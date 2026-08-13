@@ -197,9 +197,9 @@ void AppData_respond(
 );
 
 /*!
-    @brief Advance every running game by one frame and push each member the
-           snapshot that frame produced, marking fds whose snapshot could
-           not be built in @p err_fds .
+    @brief Advance every running game by @p expirations frames and push each
+           member the snapshot the last of them produced, marking fds whose
+           snapshot could not be built in @p err_fds .
 
     A tick is the only thing that moves a board. An input request records a
     key (see @c app/dispatch.h ) and this applies the whole recorded set as
@@ -208,19 +208,30 @@ void AppData_respond(
     server-originated @c STATE request rather than a response, since it
     answers no request of the player's.
 
-    A game that tops out on its own frame ends here: its room drops back to
-    @c ROOM_LOBBY , and the snapshot for that frame is the one carrying
-    @c is_game_active false, so the end of the game reaches the player as
-    part of the frame that caused it rather than as a message of its own.
+    @p expirations is the clock's count of periods elapsed (see
+    @c RoomTimer_read ), so a loop that overran several of them catches the
+    games up rather than letting them run slow. Only the recorded inputs go
+    into the first of those frames; the rest advance on no input, since
+    which frame a key belonged to was not recorded. One snapshot goes out
+    however many frames it took, so a member never sees the catch-up as more
+    messages than a tick on time.
+
+    A game that tops out on one of its frames ends there: its room drops
+    back to @c ROOM_LOBBY , later frames of the same call do not run, and
+    the snapshot is the one carrying @c is_game_active false, so the end of
+    the game reaches the player as part of the frame that caused it rather
+    than as a message of its own.
 
     @pre  No room of @c in_game_rooms has a member outside @c players
     @pre  Every fd of @c players has a slot in @p m_response_qs (both are
           initialized at accept, see server_tick's accept fan-out)
 
+    @post Nothing happened at all when @p expirations is `0` : no frame runs
+          and no snapshot is pushed.
     @post Every room of @c in_game_rooms whose member is not in @p err_fds
-          has advanced one frame and has no pending inputs. A room that
-          topped out on that frame is @c ROOM_LOBBY and absent from
-          @c in_game_rooms .
+          has advanced @p expirations frames, or as many as it took to top
+          out, and has no pending inputs. A room that topped out is
+          @c ROOM_LOBBY and absent from @c in_game_rooms .
     @post For each failed fd, it is newly marked in @p err_fds with its slot
           in @p m_response_qs inactive, along with messages there freed.
           Pre-existing entries of @p err_fds are preserved.
@@ -241,6 +252,7 @@ void AppData_respond(
 */
 void AppData_room_tick(
     AppData* data,
+    uint64_t expirations,
     SparseSet_HtttpOutboundMessageQueue* m_response_qs,
     SparseSet_bool* err_fds
 );

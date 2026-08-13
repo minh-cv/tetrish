@@ -9,6 +9,7 @@
 #include "htttp_layer.h"
 #include "logger_layer.h"
 #include "player_io.h"
+#include "room_timer.h"
 #include "app/app_layer.h"
 
 typedef struct {
@@ -20,6 +21,7 @@ typedef struct {
     AuthData auth;
     HtttpData htttp;
     AppData app;
+    RoomTimer room_timer;
     ControlData control;
 } Server;
 

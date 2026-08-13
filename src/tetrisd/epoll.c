@@ -142,6 +142,11 @@ int Epoll_poll(EpollData* data, Vec_Fd* player_read, Vec_Fd* player_write, Epoll
                 m_signals->logger_timer_expired = true;
             }
             break;
+        case EPOLL_ENTRY_ROOM_TIMERFD:
+            if (ev->events & EPOLLIN) {
+                m_signals->room_timer_expired = true;
+            }
+            break;
         case EPOLL_ENTRY_PLAYER:
             // EPOLLIN first: a peer that sends and closes reports both at once,
             // and the pending bytes are still worth reading. The reader sees
