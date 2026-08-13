@@ -51,6 +51,9 @@ int config_var_init(struct config_var* cfg_var) {
     static const unsigned int MAX_PLAYER_FD_DEFAULT = 1008;
     static const unsigned int MAX_ROOMS_DEFAULT = 512;
     static const unsigned int ROOM_TICK_HZ_DEFAULT = 60;
+    // spec_from_hz computes the period as NS_PER_S / tick_hz, so a higher rate
+    // truncates to a zero period, which timerfd_settime reads as "disarm"
+    static const unsigned int ROOM_TICK_HZ_MAX = 1000000000;
     static const unsigned int LOGGER_RECONNECT_SECONDS_DEFAULT = 5;
     static const unsigned int LOGGER_CAPACITY_DEFAULT = 512;
     static const unsigned int CLIENT_CAPACITY_DEFAULT = 8;
@@ -138,6 +141,13 @@ int config_var_init(struct config_var* cfg_var) {
 
     unsigned int room_tick_hz;
     if (config_get_uint_arg(&config, "tetrisd_room_tick_hz", ROOM_TICK_HZ_DEFAULT, 1, &room_tick_hz) == -1) {
+        DTOR_ERR_RETURN(errdtor, dtor, -1);
+    }
+    // rejected here rather than at RoomTimer_init, where a zero period is
+    // indistinguishable from a deliberate disarm: the clock would come up
+    // "successfully", never fire, and freeze every in-game room silently
+    if (room_tick_hz > ROOM_TICK_HZ_MAX) {
+        fprintf(stderr, "tetrisd_room_tick_hz invalid (maximum %u)\n", ROOM_TICK_HZ_MAX);
         DTOR_ERR_RETURN(errdtor, dtor, -1);
     }
 

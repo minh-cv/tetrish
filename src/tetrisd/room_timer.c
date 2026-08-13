@@ -1,5 +1,6 @@
 #include "room_timer.h"
 #include "logger.h"
+#include <assert.h>
 #include <errno.h>
 #include <unistd.h>
 
@@ -24,6 +25,12 @@ static bool spec_eq(const struct itimerspec* a, const struct itimerspec* b) {
 int RoomTimer_init(RoomTimer* data, unsigned int tick_hz) {
     if (tick_hz == 0) {
         LOGGER_LOG(LOG_ERROR, "room_timer", "tick_hz of 0 would disarm the clock");
+        return -1;
+    }
+    if (tick_hz > NS_PER_S) {
+        assert(false && "config_var bounds tetrisd_room_tick_hz at NS_PER_S");
+        LOGGER_LOG(LOG_ERROR, "room_timer",
+                   "tick_hz above %llu truncates the period to 0, disarming the clock", NS_PER_S);
         return -1;
     }
 
@@ -54,6 +61,12 @@ void RoomTimer_free(RoomTimer* data) {
 int RoomTimer_reconfig(RoomTimer* data, unsigned int tick_hz) {
     if (tick_hz == 0) {
         LOGGER_LOG(LOG_WARN, "room_timer", "tick_hz of 0 would disarm the clock, keeping the armed rate");
+        return -1;
+    }
+    if (tick_hz > NS_PER_S) {
+        assert(false && "config_var bounds tetrisd_room_tick_hz at NS_PER_S");
+        LOGGER_LOG(LOG_WARN, "room_timer",
+                   "tick_hz above %llu would disarm the clock, keeping the armed rate", NS_PER_S);
         return -1;
     }
 
