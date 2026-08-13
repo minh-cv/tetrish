@@ -1,48 +1,8 @@
-#include <fcntl.h>
+#include "daemon.h"
 #include <linux/limits.h>
-#include <signal.h>
-#include <stdarg.h>
 #include <stdio.h>
 #include <stdlib.h>
-#include <sys/stat.h>
 #include <unistd.h>
-
-static int incantation() {
-    int pid = fork();
-    if (pid < 0) {
-        perror("dspawn");
-        return 1;
-    }
-    if (pid > 0) {
-        return 1;
-    }
-    setsid();
-    signal(SIGCHLD, SIG_IGN);
-    signal(SIGHUP, SIG_IGN);
-    
-    int daemon_pid = fork();
-    if (daemon_pid < 0) {
-        perror("dspawn");
-        return 1;
-    }
-    if (daemon_pid > 0) {
-        return 1;
-    }
-    umask(0);
-    chdir("/");
-    for (int x = (int)sysconf(_SC_OPEN_MAX); x>=0; x--) {
-        close(x);
-    }
-
-    /*
-    * Attach file descriptors 0, 1, and 2 to /dev/null. */
-    open("/dev/null", O_RDWR);
-    dup(0);
-    dup(0);
-
-
-    return 0;
-}
 
 static int daemon_work(const char* log_out) {
     FILE* logger = fopen(log_out, "a");
@@ -55,6 +15,8 @@ static int daemon_work(const char* log_out) {
         fflush(logger);
         sleep(2);
     }
+
+    fclose(logger);
     return 0;
 }
 
@@ -66,9 +28,22 @@ int main() {
         return 1;
     }
     int written_char = snprintf(log_out, sizeof log_out, "%s/dspawn.log", project_dir);
-    if (written_char >= PATH_MAX) {
-        fprintf(stderr, "Error: path too long");
+    if (written_char < 0 || written_char >= (int)sizeof log_out) {
+        fprintf(stderr, "Error: log path too long.\n");
+        return 1;
     }
-    if (incantation()) return 0;
-    daemon_work(log_out);
+
+    switch (incantation()) {
+    case 0:
+        return 0;
+    case -1:
+        perror("incantation");
+        return EXIT_FAILURE;
+    case 1:
+        break;
+    default:
+        return EXIT_FAILURE;
+    }
+
+    return daemon_work(log_out);
 }
