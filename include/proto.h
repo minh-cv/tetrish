@@ -77,6 +77,10 @@
 
     @note @c State.level_state is not carried yet; add it here (a wire-format
           change) once a client renders it.
+
+    @note A bag entry of @c TETROMINO_TYPE_COUNT is not a piece but the
+          "hidden" sentinel: the server masks next pieces beyond the room's
+          preview cap before serializing.
 */
 typedef struct {
     BoardState board_state;
@@ -126,8 +130,8 @@ typedef enum {
     | 418 | 4   | `combo_counter` |
     | 422 | 1   | `hold_state.hold_type` |
     | 423 | 1   | `hold_state.hold_status` |
-    | 424 | 7   | `bag_state.bag1` |
-    | 431 | 7   | `bag_state.bag2` |
+    | 424 | 7   | `bag_state.bag1` (an entry may be the hidden sentinel) |
+    | 431 | 7   | `bag_state.bag2` (an entry may be the hidden sentinel) |
     | 438 | 1   | `bag_state.bag1_offset` |
     | 439 | 4   | `garbage_balance` |
     | 443 | 4   | `back_to_back_count` |
