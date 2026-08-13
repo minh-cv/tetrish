@@ -23,7 +23,20 @@ typedef struct {
 
 int server_init(Server* server);
 void server_free(Server* server);
-void server_tick(Server* server);
+
+/*!
+    @brief One iteration of the event loop, signal handling included.
+
+    The pending signal flags are consumed at the top, before the poll: SIGTERM
+    and SIGINT stop the loop, SIGHUP reloads the configuration, and SIGUSR1
+    dumps the server state to the log. A signal that interrupts epoll_wait
+    leaves the flag for the next call rather than being reported as a stop.
+
+    @return `0` to continue, `-1` once the daemon should stop — either from a
+            termination signal or from a control shutdown whose response has
+            already been flushed.
+*/
+int server_tick(Server* server);
 
 /*!
     @brief Validate-then-swap config reload (tetrislogd style), limited to

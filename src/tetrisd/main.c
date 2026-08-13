@@ -32,6 +32,7 @@ int main(void) {
     if (set_sig_handler(SIGINT, sig_terminate) == -1 ||
         set_sig_handler(SIGTERM, sig_terminate) == -1 ||
         set_sig_handler(SIGHUP, sig_reload_config) == -1 ||
+        set_sig_handler(SIGUSR1, sig_dump_state) == -1 ||
         set_sig_handler(SIGPIPE, SIG_IGN) == -1
     ) {
         LOGGER_PERROR("signal", "sigaction");
@@ -43,14 +44,7 @@ int main(void) {
         return EXIT_FAILURE;
     }
 
-    while (running) {
-        // set by SIGHUP or POST /reload; a signal interrupts epoll_wait, so
-        // the flag is seen without waiting for traffic
-        if (should_reload_config) {
-            should_reload_config = 0;
-            server_reload_config(&server);
-        }
-        server_tick(&server);
+    while (server_tick(&server) == 0) {
     }
 
     server_free(&server);

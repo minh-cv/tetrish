@@ -2,6 +2,8 @@
 #include "dtor.h"
 #include "htttp_layer.h"
 #include "logger.h"
+#include "sig.h"
+#include <stdio.h>
 #include <sys/epoll.h>
 #include <sys/resource.h>
 #include <unistd.h>
@@ -121,6 +123,44 @@ void server_free(Server* server) {
     config_var_free(&server->cfg);
 }
 
+/*
+    Shared by both state-dump paths and by neither's delivery: it formats and
+    nothing else, so answering GET /status and logging on SIGUSR1 stay separate
+    operations over one serialization.
+*/
+static int render_state_json(const Server* server, char* buf, size_t buf_size, size_t* out_len) {
+    size_t players_authed = 0;
+    for (size_t i = 0; i < SparseSet_AuthEntry_size(&server->auth.entries); i++) {
+        if (SparseSet_AuthEntry_at_idx(&server->auth.entries, i)->auth_state == AUTH_DONE) {
+            players_authed++;
+        }
+    }
+
+    const int written = snprintf(buf, buf_size,
+        "{\"pid\":%ld,\"players_connected\":%zu,"
+        "\"players_authed\":%zu,\"players_capacity\":%u,"
+        "\"fds_used\":%zu,\"fds_capacity\":%zu,\"listen_port\":%d}",
+        (long)getpid(), SparseSet_PlayerIoEntry_size(&server->player_io.entries),
+        players_authed, server->cfg.max_player_fd,
+        SparseSet_EpollEntry_size(&server->epoll.entries),
+        server->epoll.entries.capacity, server->cfg.port);
+    if (written < 0 || (size_t)written >= buf_size) {
+        return -1;
+    }
+    *out_len = (size_t)written;
+    return 0;
+}
+
+static void dump_state_to_log(const Server* server) {
+    char buf[512];
+    size_t len = 0;
+    if (render_state_json(server, buf, sizeof(buf), &len) == -1) {
+        LOGGER_LOG(LOG_WARN, "server", "state dump does not fit its buffer");
+        return;
+    }
+    LOGGER_LOG(LOG_INFO, "server", "state %s", buf);
+}
+
 static void swap_str(char** a, char** b) {
     char* const tmp = *a;
     *a = *b;
@@ -159,13 +199,28 @@ void server_reload_config(Server* server) {
                server->cfg.max_player_fd, server->cfg.room_tick_hz);
 }
 
-void server_tick(Server* server) {
+int server_tick(Server* server) {
+    if (!running) {
+        return -1;
+    }
+    if (should_reload_config) {
+        should_reload_config = 0;
+        server_reload_config(server);
+    }
+    if (dump_state) {
+        dump_state = 0;
+        dump_state_to_log(server);
+    }
+
     EpollSignals signals = {0};
     if (Epoll_poll(&server->epoll, &server->player_io.players_reading,
                    &server->player_io.players_writing, &signals) == -1) {
-        return;
+        // interrupted by a signal, or a poll error: the flags above are re-read
+        // on the next call, so this is not a stop
+        return 0;
     }
 
+    ControlActions actions = {0};
     bool should_stop_accepting = false;
     if (signals.acceptor_readable) {
         Acceptor_accept(&server->acceptor, server->cfg.max_player_fd, &server->acceptor.accepted, &should_stop_accepting);
@@ -191,29 +246,21 @@ void server_tick(Server* server) {
         }
     }
 
-    if (signals.control_hangup && server->control.conn.fd != -1) {
-        *SparseSet_bool_activate(&server->epoll.control_close_fds,
-                                 (size_t)server->control.conn.fd) = true;
+    if (signals.control_hangup) {
+        Control_hangup(&server->control, &server->epoll.control_close_fds);
     }
     if (signals.control_readable) {
         Control_read(&server->control, &server->epoll.control_close_fds);
     }
 
-    size_t players_authed = 0;
-    for (size_t i = 0; i < SparseSet_AuthEntry_size(&server->auth.entries); i++) {
-        if (SparseSet_AuthEntry_at_idx(&server->auth.entries, i)->auth_state == AUTH_DONE) {
-            players_authed++;
-        }
+    char state_json[512];
+    size_t state_json_len = 0;
+    if (Control_has_request(&server->control) &&
+        render_state_json(server, state_json, sizeof(state_json), &state_json_len) == -1) {
+        state_json_len = 0;
     }
-    const ControlStatusSnapshot snapshot = {
-        SparseSet_PlayerIoEntry_size(&server->player_io.entries),
-        players_authed,
-        server->cfg.max_player_fd,
-        SparseSet_EpollEntry_size(&server->epoll.entries),
-        server->epoll.entries.capacity,
-        server->cfg.port,
-    };
-    Control_process(&server->control, &snapshot, &server->epoll.control_close_fds);
+    Control_process(&server->control, state_json, state_json_len,
+                    &server->epoll.control_close_fds, &actions);
 
     PlayerIo_read(&server->player_io, &server->player_io.players_reading,
                   &server->player_io.read_qs, &server->epoll.player_close_fds);
@@ -238,14 +285,11 @@ void server_tick(Server* server) {
                    &server->player_io.players_writing, &server->epoll.player_close_fds,
                    &server->player_io.vec_write_qs_status);
 
-    Control_write(&server->control, &server->epoll.control_close_fds);
-    if (server->control.conn.fd != -1 &&
-        !SparseSet_bool_contains(&server->epoll.control_close_fds,
-                                 (size_t)server->control.conn.fd)) {
-        Epoll_set_interest(&server->epoll, server->control.conn.fd,
-                           EPOLLIN | (Control_wants_write(&server->control)
-                                          ? (EpollInterest)EPOLLOUT
-                                          : 0u));
+    ControlInterest control_interest;
+    Control_write(&server->control, &server->epoll.control_close_fds,
+                  &control_interest, &actions);
+    if (control_interest.fd != -1) {
+        Epoll_set_interest(&server->epoll, control_interest.fd, control_interest.interest);
     }
 
     Epoll_sync_interest(&server->epoll, &server->player_io.vec_write_qs_status,
@@ -267,4 +311,11 @@ AppData_close(&server->app, &server->epoll.player_close_fds);
     HtttpData_reset(&server->htttp);
     Control_reset(&server->control);
     Epoll_reset(&server->epoll);
+
+    // applied at the top of the next tick, once this one has flushed the
+    // response acknowledging it
+    if (actions.reload_config) {
+        should_reload_config = 1;
+    }
+    return actions.shutdown ? -1 : 0;
 }

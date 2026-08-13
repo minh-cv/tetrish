@@ -2,7 +2,6 @@
 #include "dtor.h"
 #include "htttp.h"
 #include "logger.h"
-#include "sig.h"
 #include "socket.h"
 #include "wire.h"
 #include <assert.h>
@@ -10,6 +9,7 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+#include <sys/epoll.h>
 #include <sys/socket.h>
 #include <sys/stat.h>
 #include <sys/un.h>
@@ -188,6 +188,13 @@ Fd Control_accept(ControlData* data, size_t fd_capacity) {
     }
 }
 
+void Control_hangup(ControlData* data, SparseSet_bool* m_close_fds) {
+    if (data->conn.fd == -1) {
+        return;
+    }
+    *SparseSet_bool_activate(m_close_fds, (size_t)data->conn.fd) = true;
+}
+
 void Control_read(ControlData* data, SparseSet_bool* m_close_fds) {
     ControlConn* conn = &data->conn;
     if (conn->fd == -1 || SparseSet_bool_contains(m_close_fds, (size_t)conn->fd)) {
@@ -198,29 +205,18 @@ void Control_read(ControlData* data, SparseSet_bool* m_close_fds) {
     }
 }
 
-static int build_status_body(const ControlStatusSnapshot* snapshot,
-                             char* buf, size_t buf_size, size_t* out_len) {
-    const int written = snprintf(buf, buf_size,
-        "{\"pid\":%ld,\"players_connected\":%zu,"
-        "\"players_authed\":%zu,\"players_capacity\":%zu,"
-        "\"fds_used\":%zu,\"fds_capacity\":%zu,\"listen_port\":%d}",
-        (long)getpid(), snapshot->players_connected,
-        snapshot->players_authed, snapshot->players_capacity,
-        snapshot->fds_used, snapshot->fds_capacity, snapshot->listen_port);
-    if (written < 0 || (size_t)written >= buf_size) {
-        return -1;
-    }
-    *out_len = (size_t)written;
-    return 0;
+bool Control_has_request(const ControlData* data) {
+    return data->conn.fd != -1 && ReaderFrameQueue_size(&data->conn.read_q) > 0;
 }
 
 static int process_one(ControlConn* conn, const ReaderFrame* frame,
-                       const ControlStatusSnapshot* snapshot) {
+                       const char* state_json, size_t state_json_len,
+                       ControlActions* m_actions) {
     HtttpStatus status = HTTTP_STATUS_BAD_REQUEST;
-    char status_body[512];
     const char* body = NULL;
     size_t body_len = 0;
     bool shutdown_requested = false;
+    bool reload_requested = false;
 
     HtttpMessage parsed;
     if (frame->status == READER_FRAME_OK &&
@@ -230,13 +226,13 @@ static int process_one(ControlConn* conn, const ReaderFrame* frame,
             if (strcmp(parsed.request.method, "GET") != 0) {
                 status = HTTTP_STATUS_METHOD_NOT_ALLOWED;
             }
-            else if (build_status_body(snapshot, status_body,
-                                       sizeof(status_body), &body_len) == -1) {
+            else if (state_json_len == 0) {
                 return -1;
             }
             else {
                 status = HTTTP_STATUS_OK;
-                body = status_body;
+                body = state_json;
+                body_len = state_json_len;
             }
         }
         else if (strcmp(parsed.request.path, "/shutdown") == 0) {
@@ -255,10 +251,10 @@ static int process_one(ControlConn* conn, const ReaderFrame* frame,
                 status = HTTTP_STATUS_METHOD_NOT_ALLOWED;
             }
             else {
-                should_reload_config = 1; // applied atop the main loop
                 status = HTTTP_STATUS_OK;
                 body = "{\"ok\":true}";
                 body_len = strlen(body);
+                reload_requested = true;
             }
         }
         else {
@@ -291,15 +287,19 @@ static int process_one(ControlConn* conn, const ReaderFrame* frame,
         return -1;
     }
 
-    // only honored once the response is staged, so a failed allocation above
-    // reads as "busy" to the client instead of killing the daemon silently
+    // only recorded once the response is staged, so a failed allocation above
+    // reads as "busy" to the client instead of acting on an unanswered request
     if (shutdown_requested) {
         conn->shutdown_requested = true;
+    }
+    if (reload_requested) {
+        m_actions->reload_config = true;
     }
     return 0;
 }
 
-void Control_process(ControlData* data, const ControlStatusSnapshot* snapshot, SparseSet_bool* m_close_fds) {
+void Control_process(ControlData* data, const char* state_json, size_t state_json_len,
+                     SparseSet_bool* m_close_fds, ControlActions* m_actions) {
     ControlConn* conn = &data->conn;
     if (conn->fd == -1 || SparseSet_bool_contains(m_close_fds, (size_t)conn->fd)) {
         return;
@@ -308,20 +308,22 @@ void Control_process(ControlData* data, const ControlStatusSnapshot* snapshot, S
     const size_t count = ReaderFrameQueue_size(&conn->read_q);
     for (size_t i = 0; i < count; i++) {
         const ReaderFrame* frame = ReaderFrameQueue_at(&conn->read_q, i);
-        if (process_one(conn, frame, snapshot) == -1) {
+        if (process_one(conn, frame, state_json, state_json_len, m_actions) == -1) {
             *SparseSet_bool_activate(m_close_fds, (size_t)conn->fd) = true;
             return;
         }
     }
 }
 
-bool Control_wants_write(const ControlData* data) {
-    return data->conn.fd != -1 &&
-           (WriterFrameQueue_size(&data->conn.write_q) > 0 ||
-            data->conn.writer.state != WRITER_IDLE);
+static bool wants_write(const ControlConn* conn) {
+    return WriterFrameQueue_size(&conn->write_q) > 0 || conn->writer.state != WRITER_IDLE;
 }
 
-void Control_write(ControlData* data, SparseSet_bool* m_close_fds) {
+void Control_write(ControlData* data, SparseSet_bool* m_close_fds,
+                   ControlInterest* m_interest_out, ControlActions* m_actions) {
+    m_interest_out->fd = -1;
+    m_interest_out->interest = 0;
+
     ControlConn* conn = &data->conn;
     if (conn->fd == -1) {
         return;
@@ -330,20 +332,20 @@ void Control_write(ControlData* data, SparseSet_bool* m_close_fds) {
     if (SparseSet_bool_contains(m_close_fds, fd)) {
         return; // close reclaims whatever the queue still holds
     }
-    if (!Control_wants_write(data)) {
-        return;
+
+    if (wants_write(conn)) {
+        if (writer_send(&conn->writer, conn->fd, &conn->write_q) == -1) {
+            writer_queue_drain(&conn->write_q);
+            *SparseSet_bool_activate(m_close_fds, fd) = true;
+            return;
+        }
+        if (conn->shutdown_requested && !wants_write(conn)) {
+            m_actions->shutdown = true;
+        }
     }
 
-    if (writer_send(&conn->writer, conn->fd, &conn->write_q) == -1) {
-        writer_queue_drain(&conn->write_q);
-        *SparseSet_bool_activate(m_close_fds, fd) = true;
-        return;
-    }
-
-    if (conn->shutdown_requested && !Control_wants_write(data)) {
-        LOGGER_LOG(LOG_INFO, "control", "shutdown requested over the control channel");
-        running = 0;
-    }
+    m_interest_out->fd = conn->fd;
+    m_interest_out->interest = EPOLLIN | (wants_write(conn) ? (EpollInterest)EPOLLOUT : 0u);
 }
 
 void Control_close(ControlData* data, const SparseSet_bool* m_close_fds) {

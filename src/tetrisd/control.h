@@ -17,18 +17,24 @@ typedef struct {
 } ControlConn;
 
 /*!
-    @brief Inputs Control_process() reads instead of reaching into the other
-    layers, so control stays decoupled from them and the call site shows the
-    dataflow.
+    @brief What a served request asks the server to do.
+
+    Control parses and answers; it does not carry out either action itself, so
+    reloading and stopping stay the server's to sequence.
 */
 typedef struct {
-    size_t players_connected;
-    size_t players_authed;
-    size_t players_capacity;
-    size_t fds_used;
-    size_t fds_capacity;
-    int listen_port;
-} ControlStatusSnapshot;
+    bool reload_config;
+    bool shutdown;
+} ControlActions;
+
+/*!
+    @brief The interest mask the connection wants, for the caller to hand to
+    Epoll_set_interest. @c fd is `-1` when there is nothing to sync.
+*/
+typedef struct {
+    Fd fd;
+    EpollInterest interest;
+} ControlInterest;
 
 /*!
     The admin control plane: a Unix-domain listener plus at most one connection,
@@ -101,6 +107,20 @@ void Control_reset(ControlData* data);
 Fd Control_accept(ControlData* data, size_t fd_capacity);
 
 /*!
+    @brief mark the connection for close after an EPOLLERR/EPOLLHUP
+
+    @note a no-op when no connection is held.
+*/
+void Control_hangup(ControlData* data, SparseSet_bool* m_close_fds);
+
+/*!
+    @brief whether a request is waiting to be served
+
+    Lets the caller skip rendering the state dump on ticks with no request.
+*/
+bool Control_has_request(const ControlData* data);
+
+/*!
     @brief One read pass over the live connection, appending complete frames to
     its read_q and marking a dead fd in @p m_close_fds .
 
@@ -115,30 +135,34 @@ void Control_read(ControlData* data, SparseSet_bool* m_close_fds);
     @brief Serve every frame in read_q: parse it as HTTTP, route it, and stage
     one serialized response per request into write_q.
 
-    A shutdown request only takes effect after its response is flushed:
-    Control_write() acts on @c shutdown_requested once the queue drains
-    (respond-then-act).
+    @p state_json is the server's rendered state dump, used verbatim as the
+    body of a GET /status. A shutdown request is reported through
+    @p m_actions only once its response has flushed, which Control_write
+    determines (respond-then-act); a reload is reported as soon as it is
+    answered.
 
     @pre read_q and write_q have the same capacity, so the
          one-response-per-request output always fits what has not yet drained
-    @post an operation failure (allocation, or a write_q that the previous
-          tick's backlog left full) marks the fd in @p m_close_fds
+    @pre @p state_json is non-empty if a request could be a GET /status
+    @post an operation failure (allocation, a missing state dump, or a write_q
+          that the previous tick's backlog left full) marks the fd in
+          @p m_close_fds
 */
-void Control_process(ControlData* data, const ControlStatusSnapshot* snapshot, SparseSet_bool* m_close_fds);
+void Control_process(ControlData* data, const char* state_json, size_t state_json_len,
+                     SparseSet_bool* m_close_fds, ControlActions* m_actions);
 
 /*!
     @brief Drain the connection's write_q (readiness-independent, like
     PlayerIo_write).
 
     @post a socket failure marks the fd in @p m_close_fds ; a queue that
-          drained with @c shutdown_requested set stops the main loop.
+          drained with a shutdown pending sets @c shutdown in @p m_actions .
+    @post @p m_interest_out carries the mask to apply, or `fd == -1` when the
+          connection is gone or closing — so the caller never has to inspect
+          this layer's internals to sync epoll.
 */
-void Control_write(ControlData* data, SparseSet_bool* m_close_fds);
-
-/*!
-    @brief whether EPOLLOUT should be armed on the connection
-*/
-bool Control_wants_write(const ControlData* data);
+void Control_write(ControlData* data, SparseSet_bool* m_close_fds,
+                   ControlInterest* m_interest_out, ControlActions* m_actions);
 
 /*!
     @brief Free the connection if its fd is in @p m_close_fds .
