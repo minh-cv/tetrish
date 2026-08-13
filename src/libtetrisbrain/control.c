@@ -84,7 +84,7 @@ static bool apply_hold(State* s) {
         return false;
     }
     if (prev_hold_status == HOLD_EMPTY) {
-        s->spawn_type = next_bag(&s->bag_state);
+        s->spawn_type = next_bag(&s->bag_state, &s->rng);
     }
     if (prev_hold_status == HOLD_ACTIVE) {
         s->spawn_type = prev_type;
@@ -96,10 +96,10 @@ static bool apply_receive_garbage(State* s) {
     int received = s->garbage_balance;
     if (received > 0) {
         s->garbage_balance = 0;
-        if (receive_garbage(&s->board_state, received)) return true;
+        if (receive_garbage(&s->board_state, received, &s->rng)) return true;
     }
 
-    s->spawn_type = next_bag(&s->bag_state);
+    s->spawn_type = next_bag(&s->bag_state, &s->rng);
     return apply_spawn(s);
 }
 
@@ -112,6 +112,7 @@ static bool apply_store_garbage(State* s, int lines_cleared, TSpinType t_spin) {
     if (lines_cleared >= 1) {
         int counter_amount = get_sending_garbage(s, lines_cleared, t_spin);
         s->garbage_balance -= counter_amount;
+        add_score(s, counter_amount);
     }
     return apply_unset_hold_inactive(s);
 }
@@ -174,7 +175,7 @@ bool apply_spawn(State* s) {
 }
 
 bool apply_player_inputs(State* s, const bool (*inputs)[PLAYER_INPUT_KEY_COUNT]) {
-    if ((*inputs)[PLAYER_INPUT_KEY_HOLD]) {
+    if ((*inputs)[PLAYER_INPUT_KEY_HOLD] && s->hold_state.hold_status != HOLD_INACTIVE) {
         return apply_hold(s);
     }
 

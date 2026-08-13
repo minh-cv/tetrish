@@ -3,6 +3,7 @@
 
 #include "tetrisbrain/control.h" // IWYU pragma: export
 #include "tetrisbrain/input.h" // IWYU pragma: export
+#include "tetrisbrain/rng.h" // IWYU pragma: export
 #include "tetrisbrain/state.h" // IWYU pragma: export
 #include "tetrisbrain/static.h" // IWYU pragma: export
 

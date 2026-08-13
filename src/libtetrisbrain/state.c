@@ -2,12 +2,11 @@
 #include "tetrisbrain/static.h"
 
 #include <assert.h>
-#include <stdlib.h>
 #include <string.h>
 
-static void fill_random_bag(TetrominoType bag[TETROMINO_TYPE_COUNT]);
+static void fill_random_bag(TetrominoType bag[TETROMINO_TYPE_COUNT], Rng* rng);
 
-State init_state(void) {
+State init_state(uint64_t seed) {
     State s = {
         .gravity_state = {
             1,
@@ -27,10 +26,11 @@ State init_state(void) {
             s.board_state.board.cells[r][c] = TETROMINO_CELL_EMPTY;
         }
     }
-    s.bag_state.bag1_offset = TETROMINO_TYPE_COUNT - 1;
-    fill_random_bag(s.bag_state.bag1);
-    fill_random_bag(s.bag_state.bag2);
-    s.spawn_type = next_bag(&s.bag_state);
+    rng_init(&s.rng, seed);
+    s.bag_state.bag1_offset = -1;
+    fill_random_bag(s.bag_state.bag1, &s.rng);
+    fill_random_bag(s.bag_state.bag2, &s.rng);
+    s.spawn_type = next_bag(&s.bag_state, &s.rng);
     s.combo_counter = -1;
     s.back_to_back_count = -1;
 
@@ -38,25 +38,25 @@ State init_state(void) {
     return s;
 }
 
-static void fill_random_bag(TetrominoType bag[TETROMINO_TYPE_COUNT]) {
+static void fill_random_bag(TetrominoType bag[TETROMINO_TYPE_COUNT], Rng* rng) {
     for (int i = 0; i < TETROMINO_TYPE_COUNT; i++) {
         bag[i] = (TetrominoType)i;
     }
 
     for (int i = TETROMINO_TYPE_COUNT - 1; i > 0; i--) {
-        int j = rand() % (i + 1);
+        int j = rng_below(rng, i + 1);
         TetrominoType tmp = bag[i];
         bag[i] = bag[j];
         bag[j] = tmp;
     }
 }
 
-TetrominoType next_bag(BagState* s) {
+TetrominoType next_bag(BagState* s, Rng* rng) {
     s->bag1_offset++;
     if (s->bag1_offset == TETROMINO_TYPE_COUNT) {
         s->bag1_offset = 0;
         memcpy(s->bag1, s->bag2, sizeof(s->bag1));
-        fill_random_bag(s->bag2);
+        fill_random_bag(s->bag2, rng);
     }
     return s->bag1[s->bag1_offset];
 }
@@ -92,9 +92,9 @@ bool move_down(Tetromino* t, const Board* board) {
 }
 
 bool move_left(Tetromino* t, const Board* board, MovementState* ms) {
-    ms->is_just_rotated = false;
     t->col_offset--;
     if (!is_colliding(t, board)) {
+        ms->is_just_rotated = false;
         return true;
     }
     t->col_offset++;
@@ -102,9 +102,9 @@ bool move_left(Tetromino* t, const Board* board, MovementState* ms) {
 }
 
 bool move_right(Tetromino* t, const Board* board, MovementState* ms) {
-    ms->is_just_rotated = false;
     t->col_offset++;
     if (!is_colliding(t, board)) {
+        ms->is_just_rotated = false;
         return true;
     }
     t->col_offset--;
@@ -292,13 +292,16 @@ void update_ghost_piece(BoardState* bs) {
     assert(false);
 }
 
-void add_garbage_lines(Board* board, int line_count) {
+void add_garbage_lines(Board* board, int line_count, Rng* rng) {
+    if (line_count <= 0) return;
+    if (line_count > BOARD_HEIGHT) line_count = BOARD_HEIGHT;
+
     for (int i = line_count; i < BOARD_HEIGHT; i++) {
         for (int j = 0; j < BOARD_WIDTH; j++) {
             (board->cells)[i - line_count][j] = (board->cells)[i][j];
         }
     }
-    int empty_col = rand()%BOARD_WIDTH;
+    int empty_col = rng_below(rng, BOARD_WIDTH);
     for (int i = BOARD_HEIGHT - line_count; i < BOARD_HEIGHT; i++) {
         for (int j = 0; j < BOARD_WIDTH; j++) {
             if (j != empty_col) {
@@ -319,6 +322,7 @@ bool is_outside_playfield_area(Tetromino* t) {
         }
     }
     assert(false && "empty piece");
+    return false;
 }
 
 bool push_tetromino(Tetromino* t, const Board* board) {
@@ -329,8 +333,8 @@ bool push_tetromino(Tetromino* t, const Board* board) {
     return false;
 }
 
-bool receive_garbage(BoardState* s, int count) {
-    add_garbage_lines(&s->board, count);
+bool receive_garbage(BoardState* s, int count, Rng* rng) {
+    add_garbage_lines(&s->board, count, rng);
     bool is_game_over = push_tetromino(&s->tetromino, &s->board);
     if (is_game_over) return true;
     update_ghost_piece(s);
@@ -347,13 +351,21 @@ void queue_garbage(State* s, int amount) {
     s->garbage_balance += amount;
 }
 
-bool is_perfect_clear(const Board* s) {
+static bool is_perfect_clear(const Board* s) {
     for (int i = 0; i < BOARD_HEIGHT; i++) {
         for (int j = 0; j < BOARD_WIDTH; j++) {
             if ((s->cells)[i][j] != TETROMINO_CELL_EMPTY) return false;
         }
     }
     return true;
+}
+
+void add_score(State* s, int garbage_amount) {
+    assert(garbage_amount >= 0);
+
+    // Widen first, then saturate — a long game must never wrap the score negative.
+    long long total = (long long)s->score + (long long)garbage_amount * SCORE_PER_GARBAGE;
+    s->score = total > SCORE_MAX ? SCORE_MAX : (int)total;
 }
 
 int get_sending_garbage(const State* s, int lines_cleared, TSpinType t_spin) {

@@ -24,6 +24,7 @@ target_include_directories(cjson INTERFACE ${CMAKE_CURRENT_SOURCE_DIR}/external/
 
 add_library(tetrisbrain
     src/libtetrisbrain/control.c
+    src/libtetrisbrain/rng.c
     src/libtetrisbrain/state.c
     src/libtetrisbrain/static.c)
 target_include_directories(tetrisbrain PRIVATE include)

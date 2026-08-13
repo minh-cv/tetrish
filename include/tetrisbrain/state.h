@@ -1,7 +1,14 @@
 #ifndef TETRISH_BRAIN_STATE_H
 #define TETRISH_BRAIN_STATE_H
 
+#include "rng.h"
 #include "static.h"
+
+#include <limits.h>
+
+// Score awarded per line of garbage a clear would send.
+#define SCORE_PER_GARBAGE 100
+#define SCORE_MAX INT_MAX
 
 typedef struct Board {
     TetrominoCellType cells[BOARD_HEIGHT][BOARD_WIDTH];
@@ -72,6 +79,8 @@ typedef struct State {
     MovementState movement_state;
     int garbage_balance;
     int back_to_back_count;
+    int score;
+    Rng rng;
 } State;
 
 typedef enum TSpinType {
@@ -80,8 +89,8 @@ typedef enum TSpinType {
     T_SPIN_MINI,
 } TSpinType;
 
-State init_state(void);
-TetrominoType next_bag(BagState* s);
+State init_state(uint64_t seed);
+TetrominoType next_bag(BagState* s, Rng* rng);
 void spawn(Tetromino* t, TetrominoType type);
 bool is_colliding(const Tetromino* t, const Board* board);
 bool move_down(Tetromino* t, const Board* board);
@@ -94,13 +103,14 @@ void lock_tetromino(const Tetromino* t, Board* board);
 int clear_line(const Tetromino* t, Board* board);
 int lock_and_clear(const Tetromino* t, Board* board);
 void update_ghost_piece(BoardState* bs);
-void add_garbage_lines(Board* board, int line_count);
+void add_garbage_lines(Board* board, int line_count, Rng* rng);
 bool is_outside_playfield_area(Tetromino* t);
 bool push_tetromino(Tetromino* t, const Board* board);
-bool receive_garbage(BoardState* s, int count);
+bool receive_garbage(BoardState* s, int count, Rng* rng);
 void hold(HoldState* hold_state, TetrominoType current_type);
 void queue_garbage(State* s, int amount);
 int get_sending_garbage(const State* s, int lines_cleared, TSpinType t_spin);
+void add_score(State* s, int garbage_amount);
 TSpinType get_t_spin_type(const Tetromino* t, int last_offset_used, bool is_just_rotated, const Board* board);
 
 #endif
