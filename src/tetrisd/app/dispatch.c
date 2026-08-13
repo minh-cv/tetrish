@@ -493,6 +493,10 @@ static DispatchResult handle_input(AppData* data, Fd fd, Method method, const Ht
 
     RoomMember* member = room_find_member(room, fd);
     assert(member != NULL && "a player's room_idx names a room seating them");
+    // the dead spectate; their frozen board takes no keys
+    if (!member->alive) {
+        return DISPATCH_NO_RESPONSE;
+    }
 
     // an unparseable body has no response to be reported in
     (void)parse_input(method, parsed, &member->inputs);

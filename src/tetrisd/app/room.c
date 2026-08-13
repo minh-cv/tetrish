@@ -19,6 +19,18 @@ RoomConfig room_config_default(void) {
     return config;
 }
 
+/*
+    The win rule. A game of two or more ends with a last player standing;
+    a solo game only ends by topping out, so today's singleplayer flow is
+    untouched by the versus rule.
+*/
+static bool room_is_game_over(const Room* room) {
+    if (room->alive_count == 0) {
+        return true;
+    }
+    return room->started_member_count >= 2 && room->alive_count <= 1;
+}
+
 RoomMember* room_find_member(Room* room, Fd fd) {
     for (size_t i = 0; i < room->member_count; i++) {
         if (room->members[i].fd == fd) {
@@ -144,7 +156,7 @@ void room_tick(AppData* data, size_t room_idx) {
         }
     }
 
-    if (room->alive_count == 0) {
+    if (room_is_game_over(room)) {
         room_end(data, room_idx);
     }
 }
@@ -157,8 +169,26 @@ void room_end(AppData* data, size_t room_idx) {
     if (SparseSet_bool_contains(&data->in_game_rooms, room_idx)) {
         SparseSet_bool_erase(&data->in_game_rooms, room_idx);
     }
-    LOGGER_LOG(LOG_INFO, "room", "room=%zu game over with %zu members",
-               room_idx, room->member_count);
+
+    // a solo game has survival as its goal, not outliving anyone, so its
+    // last player standing is not a winner
+    const RoomMember* winner = NULL;
+    if (room->started_member_count >= 2) {
+        for (size_t i = 0; i < room->member_count; i++) {
+            if (room->members[i].alive) {
+                winner = &room->members[i];
+                break;
+            }
+        }
+    }
+    if (winner != NULL) {
+        LOGGER_LOG(LOG_INFO, "room", "room=%zu game over, fd=%d wins, score=%d",
+                   room_idx, winner->fd, winner->game.score);
+    }
+    else {
+        LOGGER_LOG(LOG_INFO, "room", "room=%zu game over with %zu members",
+                   room_idx, room->member_count);
+    }
 }
 
 void room_leave(AppData* data, Fd fd) {
@@ -201,7 +231,7 @@ void room_leave(AppData* data, Fd fd) {
 
     LOGGER_LOG(LOG_INFO, "room", "room=%zu fd=%d left, %zu members remain",
                room_idx, fd, room->member_count);
-    if (room->status == ROOM_IN_GAME && room->alive_count == 0) {
+    if (room->status == ROOM_IN_GAME && room_is_game_over(room)) {
         room_end(data, room_idx);
     }
 }
