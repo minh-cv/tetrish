@@ -3,7 +3,9 @@
 // rewrite it) Include the shell header file for necessary constants and
 // function declarations
 #include "libs/shell.h"
+#include "cmdline.h"
 #include <assert.h>
+#include <errno.h>
 #include <stddef.h>
 #include <stdint.h>
 #include <stdio.h>
@@ -12,8 +14,48 @@
 #include <time.h>
 #include <unistd.h>
 
+static int shell_cd(char** args);
+static int shell_help(char** args);
+static int shell_exit(char** args);
+static int shell_usage(char** args);
+static int list_env(char** args);
+static int unset_env_var(char** args);
+
+typedef struct {
+    const char* name;
+    int (*func)(char** args);
+    const char* usage;
+} BuiltinCommand;
+
+static const BuiltinCommand builtin_commands[] = {
+    {"cd", shell_cd,
+     "cd [<directory>]\nChange the current working directory of the shell. Defaults to $HOME.\n"},
+    {"help", shell_help,
+     "help\nList all builtin commands.\n"},
+    {"exit", shell_exit,
+     "exit [<status>]\nTerminate the shell, exiting with <status> if given.\n"},
+    {"usage", shell_usage,
+     "usage <cmd>\nPrint how to use a command.\n"},
+    {"env", list_env,
+     "env\nList all environment variables.\n"},
+    {"setenv", set_env_var,
+     "setenv <env-name>=<value>\nSet an environment variable.\n"},
+    {"unsetenv", unset_env_var,
+     "unsetenv <env-name>\nUnset an environment variable.\n"},
+};
+
+static const size_t builtin_commands_count =
+    sizeof builtin_commands / sizeof *builtin_commands;
+
 static int shell_cd(char **args) {
-    char* path = args[1] == NULL ? getenv("HOME") : args[1];
+    const char* path = args[1];
+    if (path == NULL) {
+        path = getenv("HOME");
+        if (path == NULL) {
+            fprintf(stderr, "cd: HOME not set\n");
+            return 1;
+        }
+    }
     if (chdir(path) != 0) {
         perror("cd");
         return 1;
@@ -23,25 +65,28 @@ static int shell_cd(char **args) {
 
 static int shell_help(char **args) {
     (void)args;
-    printf(
-"The following commands are implemented within the shell:\n\
-    cd\n\
-    help\n\
-    exit\n\
-    usage\n\
-    env\n\
-    setenv\n\
-    unsetenv\n"
-    );
-
+    printf("The following commands are implemented within the shell:\n");
+    for (size_t i = 0; i < builtin_commands_count; i++) {
+        printf("    %s\n", builtin_commands[i].name);
+    }
     return 0;
 }
 
-static int shell_exit(char **cmd) {
-    for (int i = 0; cmd[i] != NULL && i < MAX_ARGS; i++) {
-        free(cmd[i]);
+static int shell_exit(char **args) {
+    int status = 0;
+    if (args[1] != NULL) {
+        char* end;
+        errno = 0;
+        long value = strtol(args[1], &end, 10);
+        if (*args[1] == '\0' || *end != '\0' || errno == ERANGE ||
+            value < 0 || value > 255) {
+            fprintf(stderr, "exit: numeric argument required\n");
+            status = 2;
+        } else {
+            status = (int)value;
+        }
     }
-    exit(0);
+    exit(status);
 }
 
 static int shell_usage(char **args) {
@@ -50,33 +95,12 @@ static int shell_usage(char **args) {
         return 1;
     }
 
-    size_t cmd_idx = get_builtin_command_index(args[1]);
-    switch (cmd_idx) {
-    case 0: // cd
-        printf("cd [<directory>]\nChange the current working directory of the shell. Defaults to $HOME.\n");
-        break;
-    case 1: // help
-        printf("help\nList all builtin commands.\n");
-        break;
-    case 2: // exit
-        printf("exit\nTerminate the shell.\n");
-        break;
-    case 3: // usage
-        printf("usage <cmd>\nPrint how to use a command.\n");
-        break;
-    case 4: // env
-        printf("env\nList all environment variables.\n");
-        break;
-    case 5: // setenv
-        printf("setenv <env-name>=<value>\nSet an environment variable.\n");
-        break;
-    case 6: // unsetenv
-        printf("unsetenv <env-name>\nUnset an environment variable.\n");
-        break;
-    default:
+    size_t index = get_builtin_command_index(args[1]);
+    if (index == SIZE_MAX) {
         fprintf(stderr, "Non-builtin command not supported.\n");
         return 2;
     }
+    fputs(builtin_commands[index].usage, stdout);
     return 0;
 }
 
@@ -129,106 +153,60 @@ static int unset_env_var(char **args) {
     return retval;
 }
 
-static const char *builtin_commands[] = {
-    "cd",   // Changes the current directory of the shell to the specified path.
-            // If no path is given, it defaults to the user's home directory.
-    "help", //  List all builtin commands in the shell
-    "exit", // Exits the shell
-    "usage",  // Provides a brief usage guide for the shell and its built-in
-              // command
-    "env",    // Lists all the environment variables currently set in the shell
-    "setenv", // Sets or modifies an environment variable for this shell session
-    "unsetenv" // Removes an environment variable from the shell
-};
-
-static int (*builtin_command_func[])(char **) = {
-    &shell_cd,     // builtin_command_func[0]: cd
-    &shell_help,   // builtin_command_func[1]: help
-    &shell_exit,   // builtin_command_func[2]: exit
-    &shell_usage,  // builtin_command_func[3]: usage
-    &list_env,     // builtin_command_func[4]: env
-    &set_env_var,  // builtin_command_func[5]: setenv
-    &unset_env_var // builtin_command_func[6]: unsetenv
-};
-
-size_t get_builtin_command_index(char *cmd) {
-    for (size_t i = 0; i < sizeof(builtin_commands)/sizeof(const char*); i++) {
-        if (strcmp(cmd, builtin_commands[i]) == 0) {
+size_t get_builtin_command_index(const char *cmd) {
+    for (size_t i = 0; i < builtin_commands_count; i++) {
+        if (strcmp(cmd, builtin_commands[i].name) == 0) {
             return i;
         }
     }
     return SIZE_MAX;
 }
 
-void execute_builtin_command(char **cmd, size_t index) {
-    builtin_command_func[index](cmd);
+int execute_builtin_command(char **cmd, size_t index) {
+    assert(index < builtin_commands_count);
+    return builtin_commands[index].func(cmd);
 }
 
-// Function to read a command from the user input
-bool read_command_from_file(char **cmd, FILE* file) {
-  // Define a character array to store the command line input
-  char line[MAX_LINE];
-  // Initialize count to keep track of the number of characters read
-  int count = 0, i = 0;
-  // Array to hold pointers to the parsed command arguments
-  char *array[MAX_ARGS], *command_token;
+ReadCommandResult read_command_from_file(FILE* file, char*** out_argv, size_t* out_argc) {
+    *out_argv = NULL;
+    *out_argc = 0;
 
-  // Infinite loop to read characters until a newline or maximum line length is
-  // reached
-  for (;;) {
-    // Read a single character from standard input
-    int current_char = fgetc(file);
-    // Store the character in the line array and increment count
-    line[count++] = (char)(current_char == EOF ? '\n' : current_char);
-    // If a newline character is encountered, break out of the loop
-    if (current_char == '\n' || current_char == EOF)
-      break;
-    // If the command exceeds the maximum length, print an error and exit
-    if (count >= MAX_LINE) {
-      printf("Command is too long, unable to process\n");
-      exit(1);
+    char* line = NULL;
+    size_t capacity = 0;
+    if (getline(&line, &capacity, file) < 0) {
+        free(line);
+        if (ferror(file)) {
+            perror("tetrish: read");
+        }
+        return READ_COMMAND_END;
     }
-  }
-  // Null-terminate the command line string
-  line[count] = '\0';
 
-  // If only the newline character was entered, return without processing
-  if (count == 1)
-    return feof(file) == 0;
+    char** argv = cmdline_parse(line, out_argc);
+    free(line);
+    if (argv == NULL) {
+        return READ_COMMAND_INVALID;
+    }
 
-  // Use strtok to parse the first token (word) of the command
-  command_token = strtok(line, " \n");
-
-  // Continue parsing the line into words and store them in the array
-  while (command_token != NULL) {
-    array[i++] = strdup(command_token);  // Duplicate the token and store it
-    command_token = strtok(NULL, " \n"); // Get the next token
-  }
-
-  // Copy the parsed command and its parameters to the cmd array
-  for (int j = 0; j < i; j++) {
-    cmd[j] = array[j];
-  }
-  // Null-terminate the cmd array to mark the end of arguments
-  cmd[i] = NULL;
-  return feof(file) == 0;
+    *out_argv = argv;
+    return READ_COMMAND_OK;
 }
 
-bool read_command(char **cmd) {
-    return read_command_from_file(cmd, stdin);
+void free_command(char** argv) {
+    if (argv == NULL) {
+        return;
+    }
+    for (char** arg = argv; *arg != NULL; arg++) {
+        free(*arg);
+    }
+    free(argv);
 }
 
-// Function to display the shell prompt
 void type_prompt() {
-  fflush(stdout); // Flush the output buffer
-  printf("$$ ");  // Print the shell prompt
+  printf("$$ ");
+  fflush(stdout);
 }
 
 void clear() {
-#ifdef _WIN32
-    system("cls"); // Windows command to clear screen
-#else
-    system("clear"); // UNIX/Linux command to clear screen
-#endif
-
+    fputs("\x1b[H\x1b[2J\x1b[3J", stdout);
+    fflush(stdout);
 }

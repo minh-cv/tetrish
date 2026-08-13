@@ -66,6 +66,7 @@ target_include_directories(perms PUBLIC src/tetrish)
 
 add_executable(tetrish src/tetrish/main.c src/tetrish/shell.c)
 target_include_directories(tetrish PRIVATE src/tetrish)
+target_link_libraries(tetrish PRIVATE cmdline)
 
 add_executable(ld src/tetrish/system_programs/ld.c)
 target_include_directories(ld PRIVATE src/tetrish)
@@ -85,8 +86,14 @@ target_include_directories(backup PRIVATE src/tetrish)
 add_executable(sys src/tetrish/system_programs/sys.c)
 target_include_directories(sys PRIVATE src/tetrish)
 
-add_executable(hash src/tetrish/system_programs/hash.c)
-set_target_properties(hash PROPERTIES OUTPUT_NAME "#")
+add_executable(dspawn src/tetrish/system_programs/dspawn.c)
+target_include_directories(dspawn PRIVATE src/tetrish)
+target_link_libraries(dspawn PRIVATE daemon)
+
+add_executable(dcheck src/tetrish/system_programs/dcheck.c)
+target_include_directories(dcheck PRIVATE src/tetrish)
+
+add_executable(directive src/tetrish/system_programs/directive.c)
 
 find_package(Doxygen QUIET)
 if(DOXYGEN_FOUND)
@@ -110,7 +117,10 @@ install(
         ldr
         find
         backup
-        hash
+        sys
+        dspawn
+        dcheck
+        directive
     RUNTIME DESTINATION bin           # for executables (and DLLs on Windows)
     LIBRARY DESTINATION lib           # for shared libraries on Unix
     ARCHIVE DESTINATION lib           # for static libs (.a, .lib)

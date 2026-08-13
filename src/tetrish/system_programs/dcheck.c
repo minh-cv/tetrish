@@ -1,4 +1,6 @@
 #include <stdio.h>
+#include <stdlib.h>
+#include <sys/wait.h>
 
 int main(void) {
     const char *cmd = "ps -efj | grep dspawn | grep -Ev 'tty|pts'";
@@ -6,7 +8,7 @@ int main(void) {
     FILE *fp = popen(cmd, "r");
     if (!fp) {
         perror("popen");
-        return -1;
+        return 1;
     }
 
     char buf[1024];
@@ -14,10 +16,14 @@ int main(void) {
         fputs(buf, stdout);   // print each line as we read it
     }
 
-
     int status = pclose(fp);
     if (status == -1) {
         perror("pclose");
-        return -1;
+        return 1;
     }
+
+    if (!WIFEXITED(status)) {
+        return 1;
+    }
+    return WEXITSTATUS(status) == 1 ? 0 : WEXITSTATUS(status);
 }
