@@ -23,6 +23,7 @@ typedef enum {
     METHOD_LEAVE,
     METHOD_SET_PLAYER_NAME,
     METHOD_WHOAMI,
+    METHOD_GET_ROOM_LIST,
     METHOD_NOT_ALLOWED,
 } Method;
 
@@ -37,6 +38,7 @@ static const char* METHOD_TABLE[] = {
     [METHOD_LEAVE] = "LEAVE",
     [METHOD_SET_PLAYER_NAME] = "SET_PLAYER_NAME",
     [METHOD_WHOAMI] = "WHOAMI",
+    [METHOD_GET_ROOM_LIST] = "GET_ROOM_LIST",
 };
 
 static Method get_method(const char* method) {
@@ -227,13 +229,13 @@ static DispatchResult handle_room_create(AppData* data, Fd fd, const HtttpReques
     return respond_heap(outbound, HTTTP_STATUS_CREATED, malloc_sprintf("%zu", room_idx));
 }
 
-//! @brief read a path of exactly `/room/<digits>` into @p out_room_idx
-static int parse_room_path(const char* path, size_t* out_room_idx) {
-    static const char PREFIX[] = "/room/";
-    if (path == NULL || strncmp(path, PREFIX, sizeof(PREFIX) - 1) != 0) {
+//! @brief read a path of exactly @p prefix then digits into @p out_idx
+static int parse_path_idx(const char* path, const char* prefix, size_t* out_idx) {
+    const size_t prefix_len = strlen(prefix);
+    if (path == NULL || strncmp(path, prefix, prefix_len) != 0) {
         return -1;
     }
-    const char* digits = path + sizeof(PREFIX) - 1;
+    const char* digits = path + prefix_len;
     if (*digits == '\0') {
         return -1;
     }
@@ -248,14 +250,14 @@ static int parse_room_path(const char* path, size_t* out_room_idx) {
         }
         value = value * 10 + digit;
     }
-    *out_room_idx = value;
+    *out_idx = value;
     return 0;
 }
 
 static DispatchResult handle_room_join(AppData* data, Fd fd, const HtttpRequest* parsed,
                                        HtttpOutboundMessage* outbound) {
     size_t room_idx;
-    if (parse_room_path(parsed->path, &room_idx) == -1) {
+    if (parse_path_idx(parsed->path, "/room/", &room_idx) == -1) {
         return respond(outbound, HTTTP_STATUS_BAD_REQUEST, "Path must be /room/<id>");
     }
 
@@ -296,6 +298,62 @@ static DispatchResult handle_room_leave(AppData* data, Fd fd, HtttpOutboundMessa
 
     room_leave(data, fd);
     return respond(outbound, HTTTP_STATUS_OK, NULL);
+}
+
+//! @brief rooms per GET_ROOM_LIST page, per the course spec's listing shape
+#define ROOM_LIST_PAGE_SIZE 20
+
+/*!
+    @brief answer `GET_ROOM_LIST /rooms/<page>` with the public rooms among
+           room keys `[page * 20, (page + 1) * 20)` as a JSON array
+
+    Private rooms are left out rather than marked: they are reachable by
+    telling someone the room code, not by browsing. An empty page is a
+    valid, empty array.
+*/
+static DispatchResult handle_get_room_list(AppData* data, const HtttpRequest* parsed,
+                                           HtttpOutboundMessage* outbound) {
+    size_t page_idx;
+    if (parse_path_idx(parsed->path, "/rooms/", &page_idx) == -1) {
+        return respond(outbound, HTTTP_STATUS_BAD_REQUEST, "Path must be /rooms/<page>");
+    }
+
+    cJSON* rooms = cJSON_CreateArray();
+    if (rooms == NULL) {
+        return respond(outbound, HTTTP_STATUS_INTERNAL_SERVER_ERROR, "Out of memory");
+    }
+
+    // a page past SIZE_MAX / 20 would overflow the key math, and is far
+    // beyond any real capacity: it is just an empty page
+    const size_t first = page_idx > SIZE_MAX / ROOM_LIST_PAGE_SIZE
+        ? data->rooms.capacity
+        : page_idx * ROOM_LIST_PAGE_SIZE;
+    for (size_t key = first; key < first + ROOM_LIST_PAGE_SIZE && key < data->rooms.capacity; key++) {
+        if (!SparseSet_Room_contains(&data->rooms, key)) {
+            continue;
+        }
+        const Room* room = SparseSet_Room_get(&data->rooms, key);
+        if (!room->config.is_public) {
+            continue;
+        }
+
+        cJSON* entry = cJSON_CreateObject();
+        if (entry == NULL ||
+            cJSON_AddNumberToObject(entry, "id", (double)key) == NULL ||
+            cJSON_AddNumberToObject(entry, "players", (double)room->member_count) == NULL ||
+            cJSON_AddNumberToObject(entry, "max_players", (double)room->config.max_players) == NULL ||
+            cJSON_AddStringToObject(entry, "status",
+                                    room->status == ROOM_IN_GAME ? "in-game" : "lobby") == NULL) {
+            cJSON_Delete(entry);
+            cJSON_Delete(rooms);
+            return respond(outbound, HTTTP_STATUS_INTERNAL_SERVER_ERROR, "Out of memory");
+        }
+        cJSON_AddItemToArray(rooms, entry);
+    }
+
+    char* const body = cJSON_PrintUnformatted(rooms);
+    cJSON_Delete(rooms);
+    return respond_heap(outbound, HTTTP_STATUS_OK, body);
 }
 
 /*!
@@ -462,6 +520,8 @@ DispatchResult respond_one_request(AppData* data, Fd fd, const HtttpRequest* par
         return handle_set_player_name(data, fd, parsed, outbound);
     case METHOD_WHOAMI:
         return handle_whoami(data, fd, outbound);
+    case METHOD_GET_ROOM_LIST:
+        return handle_get_room_list(data, parsed, outbound);
     case METHOD_NOT_ALLOWED:
         return handle_method_not_allowed(outbound);
     default:
