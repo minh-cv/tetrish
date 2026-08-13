@@ -50,6 +50,7 @@ int config_var_init(struct config_var* cfg_var) {
     static const unsigned int MAX_EVENTS_DEFAULT = 64;
     static const unsigned int MAX_FDS_DEFAULT = 1024;
     static const unsigned int MAX_ROOMS_DEFAULT = 128;
+    static const unsigned int ROOM_TICK_HZ_DEFAULT = 60;
     static const unsigned int LOGGER_RECONNECT_SECONDS_DEFAULT = 5;
     static const unsigned int LOGGER_CAPACITY_DEFAULT = 512;
     static const unsigned int CLIENT_CAPACITY_DEFAULT = 8;
@@ -123,6 +124,11 @@ int config_var_init(struct config_var* cfg_var) {
         DTOR_ERR_RETURN(errdtor, dtor, -1);
     }
 
+    unsigned int room_tick_hz;
+    if (config_get_uint_arg(&config, "room_tick_hz", ROOM_TICK_HZ_DEFAULT, 1, &room_tick_hz) == -1) {
+        DTOR_ERR_RETURN(errdtor, dtor, -1);
+    }
+
     unsigned int logger_reconnect_seconds;
     if (config_get_uint_arg(&config, "logger_reconnect_seconds",
                             LOGGER_RECONNECT_SECONDS_DEFAULT, 1, &logger_reconnect_seconds) == -1) {
@@ -169,6 +175,7 @@ int config_var_init(struct config_var* cfg_var) {
         .max_fds = max_fds,
         .max_events = max_events,
         .max_rooms = max_rooms,
+        .room_tick_hz = room_tick_hz,
         .logger_reconnect_seconds = logger_reconnect_seconds,
         .logger_capacity = logger_capacity,
         .client_capacity = client_capacity,
