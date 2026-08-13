@@ -1,7 +1,10 @@
 #include "app/room.h"
+#include "tetrisbrain/control.h"
 #include "tetrisbrain/state.h"
 #include <assert.h>
+#include <stdbool.h>
 #include <string.h>
+#include <time.h>
 
 int room_create(AppData* data, Fd fd, size_t* out_room_idx) {
     assert(fd >= 0 && SparseSet_Player_contains(&data->players, (size_t)fd));
@@ -36,10 +39,28 @@ void room_start(AppData* data, size_t room_idx) {
     assert(SparseSet_Room_contains(&data->rooms, room_idx));
 
     Room* room = SparseSet_Room_get(&data->rooms, room_idx);
-    room->game = init_state();
+    const uint64_t seed = (uint64_t)time(NULL) ^ (uint64_t)room_idx * 0x9e3779b97f4a7c15ULL;
+    room->game = init_state(seed);
+    const bool is_topped_out = apply_spawn(&room->game);
+    assert(!is_topped_out && "an empty board cannot block the first piece");
+    (void)is_topped_out;
     memset(room->inputs, 0, sizeof(room->inputs));
     room->status = ROOM_IN_GAME;
     *SparseSet_bool_activate(&data->in_game_rooms, room_idx) = true;
+}
+
+void room_tick(AppData* data, size_t room_idx) {
+    assert(SparseSet_Room_contains(&data->rooms, room_idx));
+
+    Room* room = SparseSet_Room_get(&data->rooms, room_idx);
+    assert(room->status == ROOM_IN_GAME);
+
+    const bool (*inputs)[PLAYER_INPUT_KEY_COUNT] = (const bool (*)[PLAYER_INPUT_KEY_COUNT])&room->inputs;
+    const bool is_topped_out = apply_player_inputs(&room->game, inputs);
+    memset(room->inputs, 0, sizeof(room->inputs));
+    if (is_topped_out) {
+        room_end(data, room_idx);
+    }
 }
 
 void room_end(AppData* data, size_t room_idx) {

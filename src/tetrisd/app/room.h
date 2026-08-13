@@ -25,13 +25,33 @@ int room_create(AppData* data, Fd fd, size_t* out_room_idx);
 
     @pre @p room_idx is a key in @c rooms
 
-    @post the room is @c ROOM_IN_GAME with a freshly initialized board and
-          no pending inputs, and @p room_idx is in @c in_game_rooms
+    @post the room is @c ROOM_IN_GAME with a freshly initialized board, its
+          first piece in play and no pending inputs, and @p room_idx is in
+          @c in_game_rooms
+
+    @note the board is seeded from the wall clock and @p room_idx , so a
+          game is not reproducible across runs. This is not part of the
+          contract; a seed the caller supplies would be.
 
     @note starting an already started room restarts its board. This is not
           part of the contract.
 */
 void room_start(AppData* data, size_t room_idx);
+
+/*!
+    @brief advance the game of the room keyed @p room_idx by one frame
+
+    The frame applies every key recorded since the last one at once, then
+    clears them, so a key recorded twice between two ticks moves the board
+    once. A game that tops out on the frame is ended here.
+
+    @pre @p room_idx is a key in @c rooms whose room is @c ROOM_IN_GAME
+
+    @post the room's board has advanced one frame and has no pending inputs
+    @post if the game topped out, the room is @c ROOM_LOBBY and @p room_idx
+          is absent from @c in_game_rooms
+*/
+void room_tick(AppData* data, size_t room_idx);
 
 /*!
     @brief end the game of the room keyed @p room_idx

@@ -196,4 +196,53 @@ void AppData_respond(
     SparseSet_bool* err_fds
 );
 
+/*!
+    @brief Advance every running game by one frame and push each member the
+           snapshot that frame produced, marking fds whose snapshot could
+           not be built in @p err_fds .
+
+    A tick is the only thing that moves a board. An input request records a
+    key (see @c app/dispatch.h ) and this applies the whole recorded set as
+    one frame, then clears it, so a player pressing the same key twice
+    between two ticks moves once. The snapshot travels as a
+    server-originated @c STATE request rather than a response, since it
+    answers no request of the player's.
+
+    A game that tops out on its own frame ends here: its room drops back to
+    @c ROOM_LOBBY , and the snapshot for that frame is the one carrying
+    @c is_game_active false, so the end of the game reaches the player as
+    part of the frame that caused it rather than as a message of its own.
+
+    @pre  No room of @c in_game_rooms has a member outside @c players
+    @pre  Every fd of @c players has a slot in @p m_response_qs (both are
+          initialized at accept, see server_tick's accept fan-out)
+
+    @post Every room of @c in_game_rooms whose member is not in @p err_fds
+          has advanced one frame and has no pending inputs. A room that
+          topped out on that frame is @c ROOM_LOBBY and absent from
+          @c in_game_rooms .
+    @post For each failed fd, it is newly marked in @p err_fds with its slot
+          in @p m_response_qs inactive, along with messages there freed.
+          Pre-existing entries of @p err_fds are preserved.
+    @post Entry in @p m_response_qs is active iff its queue has size of at
+          least 1. Messages appended there are owned by @p m_response_qs and
+          reclaimed by HtttpData_reset.
+
+    @note A member already in @p err_fds is closing this tick, so its room
+          is left alone for AppData_close to reclaim: the game neither
+          advances nor reports.
+    @note Unlike the layers below, this one emits output no input asked for,
+          so a response queue with no room left is a reachable state rather
+          than a broken capacity contract, and is not treated as a failure.
+          A snapshot that does not fit is dropped and the next tick sends a
+          fresh one. A game-over snapshot has no next tick, so give
+          @p m_response_qs one slot more than the read queue if that loss
+          matters. Neither the drop nor its bound is part of the contract.
+*/
+void AppData_room_tick(
+    AppData* data,
+    SparseSet_HtttpOutboundMessageQueue* m_response_qs,
+    SparseSet_bool* err_fds
+);
+
 #endif

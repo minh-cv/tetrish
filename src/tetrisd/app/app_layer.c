@@ -3,11 +3,15 @@
 #include "app/room.h"
 #include "dtor.h"
 #include "htttp.h"
+#include "proto.h"
 #include "type.h"
 #include <assert.h>
 #include <stdbool.h>
+#include <stdio.h>
+#include <stdlib.h>
 #include <string.h>
 
+static DTOR_WRAPPER_DEFINE(free)
 static DTOR_WRAPPER_DEFINE(SparseSet_Player_free)
 static DTOR_WRAPPER_DEFINE(SparseSet_Room_free)
 static DTOR_WRAPPER_DEFINE(SparseSet_bool_free)
@@ -21,6 +25,17 @@ static void response_queue_drain(HtttpOutboundMessageQueue* q) {
         HtttpOutboundMessage* m = HtttpOutboundMessageQueue_front(q);
         htttp_message_free(&m->message, &m->ownership);
         HtttpOutboundMessageQueue_pop_front(q);
+    }
+}
+
+/*!
+    @brief mark @p fd failed and discard what it staged in @p m_response_qs
+*/
+static void fail_fd(size_t fd, SparseSet_HtttpOutboundMessageQueue* m_response_qs, SparseSet_bool* err_fds) {
+    *SparseSet_bool_activate(err_fds, fd) = true;
+    if (SparseSet_HtttpOutboundMessageQueue_contains(m_response_qs, fd)) {
+        response_queue_drain(SparseSet_HtttpOutboundMessageQueue_get(m_response_qs, fd));
+        SparseSet_HtttpOutboundMessageQueue_erase(m_response_qs, fd);
     }
 }
 
@@ -179,11 +194,103 @@ void AppData_respond(AppData* data, const SparseSet_HtttpParsedMessageQueue* m_p
         }
 
         if (failed) {
-            *SparseSet_bool_activate(err_fds, fd) = true;
-            if (SparseSet_HtttpOutboundMessageQueue_contains(m_response_qs, fd)) {
-                response_queue_drain(SparseSet_HtttpOutboundMessageQueue_get(m_response_qs, fd));
-                SparseSet_HtttpOutboundMessageQueue_erase(m_response_qs, fd);
-            }
+            fail_fd(fd, m_response_qs, err_fds);
+        }
+    }
+}
+
+/*!
+    @brief build the @c STATE request carrying @p room 's board into
+           @p outbound
+
+    @post on success @p outbound holds a message whose memory is owned by
+          the caller
+    @post on failure @p outbound is unmodified and nothing was allocated
+
+    @return -1 if the body or the Content-Length header could not be
+            allocated, 0 otherwise
+*/
+static int make_state_request(const Room* room, HtttpOutboundMessage* outbound) {
+    DTOR_DEFINE(errdtor, 2);
+    DTOR_DEFINE(dtor, 1);
+
+    const State* game = &room->game;
+    const ProtoStateRequest state = {
+        .board_state = game->board_state,
+        .combo_counter = game->combo_counter,
+        .hold_state = game->hold_state,
+        .bag_state = game->bag_state,
+        .garbage_balance = game->garbage_balance,
+        .back_to_back_count = game->back_to_back_count,
+        .game_score = game->score,
+        .is_game_active = room->status == ROOM_IN_GAME,
+    };
+
+    unsigned char* body;
+    size_t body_len;
+    if (proto_serialize_state_request(&state, &body, &body_len) == -1) {
+        DTOR_ERR_RETURN(errdtor, dtor, -1);
+    }
+    DTOR_INSERT(errdtor, free, body);
+
+    char scratch[32];
+    const int written = snprintf(scratch, sizeof(scratch), "%zu", body_len);
+    if (written < 0 || (size_t)written >= sizeof(scratch)) {
+        DTOR_ERR_RETURN(errdtor, dtor, -1);
+    }
+    char* const content_length = strdup(scratch);
+    if (content_length == NULL) {
+        DTOR_ERR_RETURN(errdtor, dtor, -1);
+    }
+    DTOR_INSERT(errdtor, free, content_length);
+
+    const HtttpOutboundMessage new_outbound = {
+        .message.is_request = true,
+        .message.request = {
+            .method = "STATE",
+            .path = "/",
+            .header = {
+                {"Content-Length", content_length},
+                {"Content-Type", "application/tetris-state"},
+            },
+            .header_count = 2,
+            .body = body,
+            .body_len = body_len,
+        },
+        .ownership = {
+            .is_value_owned[0] = true,
+            .is_body_owned = true,
+        },
+    };
+    *outbound = new_outbound;
+    DTOR_RETURN(dtor, 0);
+}
+
+void AppData_room_tick(AppData* data, SparseSet_HtttpOutboundMessageQueue* m_response_qs,
+                       SparseSet_bool* err_fds) {
+    for (size_t i = SparseSet_bool_size(&data->in_game_rooms); i-- > 0;) {
+        const size_t room_idx = SparseSet_bool_key_at_idx(&data->in_game_rooms, i);
+        Room* room = SparseSet_Room_get(&data->rooms, room_idx);
+        assert(room->status == ROOM_IN_GAME && "in_game_rooms holds the rooms in a game");
+
+        const Fd fd_raw = room->member;
+        assert(fd_raw >= 0 && SparseSet_Player_contains(&data->players, (size_t)fd_raw));
+        const size_t fd = (size_t)fd_raw;
+        if (SparseSet_bool_contains(err_fds, fd)) {
+            continue;
+        }
+
+        room_tick(data, room_idx);
+
+        HtttpOutboundMessage push;
+        if (make_state_request(room, &push) == -1) {
+            fail_fd(fd, m_response_qs, err_fds);
+            continue;
+        }
+
+        HtttpOutboundMessageQueue* out = SparseSet_HtttpOutboundMessageQueue_activate(m_response_qs, fd);
+        if (HtttpOutboundMessageQueue_push_back(out, &push) == -1) {
+            htttp_message_free(&push.message, &push.ownership);
         }
     }
 }
