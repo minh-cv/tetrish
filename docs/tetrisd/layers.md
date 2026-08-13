@@ -8,7 +8,7 @@ Each major task in `tetrisd` (e.g. IO, authentication, HTTTP parsing/serializati
 
 Every tick chains the layers in a fixed order: poll, accept fan-out, read, handshake/decrypt, (application), encrypt, write, interest sync, close fan-out, then per-layer resets. Writing is driven by readiness only: frames produced in a tick wait in the write state until the poller reports the socket writable.
 
-These conventions apply to layers that own several categories of per-fd state chained between neighbors. Single-purpose components (e.g. the acceptor, the logger) do not carry this structure and only follow the lifecycle naming where it makes sense.
+These conventions apply to layers that own several categories of per-fd state chained between neighbors. Single-purpose components (e.g. the acceptor, the logger) do not carry this structure and only follow the lifecycle naming where it makes sense. The logger is the one layer that currently sequences its own stages instead of participating in the tick's; see `logger.md` for what that should become.
 
 ## Data structure
 
