@@ -181,9 +181,10 @@ ReadCommandResult read_command_from_file(FILE* file, char*** out_argv, size_t* o
         return READ_COMMAND_END;
     }
 
-    char** argv = cmdline_parse(line, out_argc);
+    char** argv;
+    CmdlineResult parse_result = cmdline_parse(line, &argv, out_argc);
     free(line);
-    if (argv == NULL) {
+    if (parse_result != CMDLINE_OK) {
         return READ_COMMAND_INVALID;
     }
 

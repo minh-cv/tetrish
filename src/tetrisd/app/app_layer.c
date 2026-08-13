@@ -230,14 +230,19 @@ static char* malloc_sprintf(const char* fmt, ...) {
     @brief build the @c STATE request carrying @p room 's board into
            @p outbound
 
+    The request is addressed to the room it reports on, `/room/<room_idx>`,
+    rather than to the member it goes to.
+
+    @pre @p room_idx is the key of @p room in @c rooms
+
     @post on success @p outbound holds a message whose memory is owned by
           the caller
     @post on failure @p outbound is unmodified and nothing was allocated
 
-    @return -1 if the body or the Content-Length header could not be
-            allocated, 0 otherwise
+    @return -1 if the body, the Content-Length header or the path could not
+            be allocated, 0 otherwise
 */
-static int make_state_request(const Room* room, HtttpOutboundMessage* outbound, Fd fd) {
+static int make_state_request(const Room* room, size_t room_idx, HtttpOutboundMessage* outbound) {
     DTOR_DEFINE(errdtor, 3);
     DTOR_DEFINE(dtor, 1);
 
@@ -271,7 +276,7 @@ static int make_state_request(const Room* room, HtttpOutboundMessage* outbound, 
     }
     DTOR_INSERT(errdtor, free, content_length);
 
-    char* path = malloc_sprintf("/room/%d", fd);
+    char* path = malloc_sprintf("/room/%zu", room_idx);
     if (path == NULL) {
         DTOR_ERR_RETURN(errdtor, dtor, -1);
     }
@@ -326,7 +331,7 @@ void AppData_room_tick(AppData* data, uint64_t expirations,
         }
 
         HtttpOutboundMessage push;
-        if (make_state_request(room, &push, (int)fd) == -1) {
+        if (make_state_request(room, room_idx, &push) == -1) {
             fail_fd(fd, m_response_qs, err_fds);
             continue;
         }
