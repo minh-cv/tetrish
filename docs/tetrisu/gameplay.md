@@ -6,14 +6,23 @@ The reactor accepts these commands in its command editor:
 
 | command | HTTTP request | completion |
 |---|---|---|
-| `create` | `CREATE /` | response (`201`, or an error status) |
-| `join` | `JOIN /` | response (`201`, or an error status) |
+| `create [seats] [public] [cross]` | `CREATE /`, body `{"max_players":N,...}` when any option is given | response (`201`, or an error status) |
+| `join <room-id>` | `JOIN /room/<id>` | response (`200`, or an error status) |
 | `start` | `START /` | response (`200`, or an error status) |
 | `move left`, `move right` | `MOVE /`, body `LEFT` or `RIGHT` | encrypted frame written |
 | `rotate cw`, `rotate ccw` | `ROTATE /`, body `CW` or `CCW` | encrypted frame written |
 | `drop soft`, `drop hard` | `DROP /`, body `SOFT` or `HARD` | encrypted frame written |
 | `hold` | `HOLD /`, empty body | encrypted frame written |
 | `leave` | `LEAVE /` | response (`200`, or an error status) |
+
+A bare `create` sends no body and takes the server's room defaults, which seat
+one player. Options are matched by shape rather than by a flag grammar: a
+decimal word is the seat count, and `public` and `cross` name flags. `join`
+requires exactly one all-digit room id, refused locally rather than sent.
+
+`CREATE` and `JOIN` answer with the room id as their body, which the client
+keeps and shows in the status line — that code is what another player passes
+to `join`.
 
 `CREATE`, `JOIN`, `START`, and `LEAVE` have at most one response in flight.
 Gameplay inputs are one-way: waiting for a response to one is a protocol bug,
@@ -40,7 +49,7 @@ clears it.
 The only accepted unsolicited message is:
 
 ```text
-STATE /room/<decimal-fd>
+STATE /room/<decimal-room-id>
 Content-Type: application/tetris-state
 Content-Length: 452
 ```

@@ -42,7 +42,8 @@ static CommandRouteResult route_result(const char* input) {
 static void test_command_parser_and_router(void) {
     static const CommandCase cases[] = {
         {"create", GAME_INTENT_CREATE},
-        {"join", GAME_INTENT_JOIN},
+        {"create 4 public", GAME_INTENT_CREATE},
+        {"join 12", GAME_INTENT_JOIN},
         {"start", GAME_INTENT_START},
         {"move left", GAME_INTENT_MOVE_LEFT},
         {"move right", GAME_INTENT_MOVE_RIGHT},
@@ -62,6 +63,11 @@ static void test_command_parser_and_router(void) {
 
     assert(route_result("move") == COMMAND_ROUTE_MISSING_ARGUMENT);
     assert(route_result("move up") == COMMAND_ROUTE_INVALID_ARGUMENT);
+    // a room id is required and must be one, so a typo never reaches the wire
+    assert(route_result("join") == COMMAND_ROUTE_MISSING_ARGUMENT);
+    assert(route_result("join abc") == COMMAND_ROUTE_INVALID_ARGUMENT);
+    assert(route_result("join 1 2") == COMMAND_ROUTE_TOO_MANY_ARGUMENTS);
+    assert(route_result("create nonsense") == COMMAND_ROUTE_INVALID_ARGUMENT);
     assert(route_result("hold now") == COMMAND_ROUTE_TOO_MANY_ARGUMENTS);
     assert(route_result("drop hard now") == COMMAND_ROUTE_TOO_MANY_ARGUMENTS);
 
@@ -76,16 +82,19 @@ static void test_command_parser_and_router(void) {
     ) == COMMAND_PARSE_UNTERMINATED_QUOTE);
 }
 
-static void assert_request(
+static void assert_request_path(
     GameIntentType intent,
+    const char* argument,
     const char* method,
+    const char* path,
     const char* body,
     ClientRequestCompletion completion
 ) {
     ClientRequest request;
-    assert(game_request_from_intent(intent, &request) == 0);
+    GameRequestScratch scratch;
+    assert(game_request_from_intent(intent, argument, &scratch, &request) == 0);
     assert(strcmp(request.method, method) == 0);
-    assert(strcmp(request.path, "/") == 0);
+    assert(strcmp(request.path, path) == 0);
     assert(strcmp(request.content_type, "application/tetris-command") == 0);
     assert(request.completion == completion);
     const size_t body_len = body == NULL ? 0 : strlen(body);
@@ -104,9 +113,27 @@ static void assert_request(
     owned_htttp_message_free(&decoded);
 }
 
+static void assert_request(
+    GameIntentType intent,
+    const char* method,
+    const char* body,
+    ClientRequestCompletion completion
+) {
+    assert_request_path(intent, NULL, method, "/", body, completion);
+}
+
 static void test_game_request_mapping(void) {
     assert_request(GAME_INTENT_CREATE, "CREATE", NULL, CLIENT_REQUEST_EXPECT_REPLY);
-    assert_request(GAME_INTENT_JOIN, "JOIN", NULL, CLIENT_REQUEST_EXPECT_REPLY);
+    // the room id rides in the path, so a join without one is not a request
+    assert_request_path(
+        GAME_INTENT_JOIN, "7", "JOIN", "/room/7", NULL, CLIENT_REQUEST_EXPECT_REPLY
+    );
+    // room options become a body; a bare create keeps the server's defaults
+    assert_request_path(
+        GAME_INTENT_CREATE, "4 public", "CREATE", "/",
+        "{\"max_players\":4,\"public\":true,\"cross_room_garbage\":false}",
+        CLIENT_REQUEST_EXPECT_REPLY
+    );
     assert_request(GAME_INTENT_START, "START", NULL, CLIENT_REQUEST_EXPECT_REPLY);
     assert_request(GAME_INTENT_MOVE_LEFT, "MOVE", "LEFT", CLIENT_REQUEST_COMPLETE_ON_SEND);
     assert_request(GAME_INTENT_MOVE_RIGHT, "MOVE", "RIGHT", CLIENT_REQUEST_COMPLETE_ON_SEND);
