@@ -14,5 +14,8 @@ NetInboundDisposition net_inbound_classify(
     if (request_awaiting_reply && exact_pending_echo) {
         return NET_INBOUND_LEGACY_ECHO;
     }
+    if (!message->view.is_request) {
+        return NET_INBOUND_UNSOLICITED_REPLY;
+    }
     return NET_INBOUND_REJECT;
 }

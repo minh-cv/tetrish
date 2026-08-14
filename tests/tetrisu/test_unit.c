@@ -149,6 +149,29 @@ static OwnedHtttpMessage make_request(
     return decoded;
 }
 
+static OwnedHtttpMessage make_response(HtttpStatus status, const char* body) {
+    const size_t body_len = body == NULL ? 0 : strlen(body);
+    char body_length[32];
+    (void)snprintf(body_length, sizeof(body_length), "%zu", body_len);
+    const HtttpMessage source = {
+        .response = {
+            .status = status,
+            .reason = "Bad Request",
+            .header = {{"Content-Length", body_length}},
+            .header_count = 1,
+            .body = (const unsigned char*)body,
+            .body_len = body_len,
+        },
+        .is_request = false,
+    };
+    OwnedBytes bytes = {0};
+    bytes.ptr = htttp_serialize(&source, &bytes.len);
+    assert(bytes.ptr != NULL);
+    OwnedHtttpMessage decoded = {0};
+    assert(htttp_codec_decode_owned(&bytes, &decoded) == 0);
+    return decoded;
+}
+
 static ProtoStateRequest make_state(bool active) {
     State game = init_state(7);
     assert(!apply_spawn(&game));
@@ -199,6 +222,17 @@ static void test_state_codec_and_inbound_policy(void) {
     assert(net_inbound_classify(&unknown, false, false) == NET_INBOUND_REJECT);
     assert(net_inbound_classify(&unknown, true, true) == NET_INBOUND_LEGACY_ECHO);
     owned_htttp_message_free(&unknown);
+
+    /*
+        The daemon answers a frame it could not parse before it knows which
+        method the frame carried, and gameplay inputs complete on send, so
+        this arrives with nothing outstanding. It must not be confused with
+        the unknown server request above, which stays fatal.
+    */
+    OwnedHtttpMessage late = make_response(HTTTP_STATUS_BAD_REQUEST, "Cannot parse request");
+    assert(net_inbound_classify(&late, false, false) == NET_INBOUND_UNSOLICITED_REPLY);
+    assert(net_inbound_classify(&late, true, false) == NET_INBOUND_REPLY);
+    owned_htttp_message_free(&late);
 }
 
 static void reduce_network(
@@ -260,6 +294,33 @@ static void complete_control(
     assert(effects.count == 0);
     app_effect_list_free(&effects);
     assert(app->request == APP_REQUEST_IDLE);
+}
+
+/*
+    A late frame-level error must cost the frame, not the match: the phase,
+    the request state and the board all survive it.
+*/
+static void test_unsolicited_reply_keeps_the_game(void) {
+    AppState app;
+    app_init(&app);
+    connect_app(&app);
+    complete_control(&app, GAME_INTENT_CREATE, 201);
+    complete_control(&app, GAME_INTENT_START, 200);
+    assert(app.game_phase == APP_GAME_ACTIVE);
+
+    AppEffectList effects;
+    const NetEvent late = {
+        .type = NET_EVENT_UNSOLICITED_REPLY,
+        .response_status = 400,
+    };
+    reduce_network(&app, &late, &effects);
+    assert(effects.count == 0);
+    app_effect_list_free(&effects);
+
+    assert(app.game_phase == APP_GAME_ACTIVE);
+    assert(app.request == APP_REQUEST_IDLE);
+    assert(app.connection == APP_CONNECTION_READY);
+    app_free(&app);
 }
 
 static void test_reducer_game_lifecycle_and_input_queue(void) {
@@ -378,6 +439,7 @@ int main(void) {
     test_command_parser_and_router();
     test_game_request_mapping();
     test_state_codec_and_inbound_policy();
+    test_unsolicited_reply_keeps_the_game();
     test_reducer_game_lifecycle_and_input_queue();
     test_failed_control_response_preserves_phase();
     test_gameplay_input_queue_capacity();

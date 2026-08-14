@@ -270,6 +270,17 @@ static int accept_plaintext(NetClient* client, OwnedBytes* plaintext, NetEventLi
             client->state = NET_CLIENT_READY_IDLE;
             client->has_deadline = false;
         }
+    } else if (disposition == NET_INBOUND_UNSOLICITED_REPLY) {
+        // no request state to settle: nothing was outstanding, which is how
+        // this got here. The report goes up and the session carries on.
+        result = emit_event(
+            events, NET_EVENT_UNSOLICITED_REPLY, body.ptr, body.len,
+            client_error(CLIENT_ERROR_NONE, 0, NULL)
+        );
+        if (result == 0) {
+            events->items[events->count - 1].response_status =
+                (int)message.view.response.status;
+        }
     } else {
         owned_htttp_message_free(&message);
         return emit_error(

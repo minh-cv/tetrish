@@ -336,6 +336,16 @@ static int reduce_network(
         app->pending_operation = APP_PENDING_NONE;
         app->active_completion = CLIENT_REQUEST_EXPECT_REPLY;
         return schedule_next_input(app, effects);
+    case NET_EVENT_UNSOLICITED_REPLY: {
+        // the server reporting a frame it could not use, typically a
+        // corrupted input. Nothing was pending, so no phase or request state
+        // moves and the game keeps running.
+        char text[APP_NOTIFICATION_CAPACITY];
+        (void)snprintf(text, sizeof(text), "Server reported %d for a frame it could not use",
+                       event->response_status);
+        set_notification(app, text);
+        return 0;
+    }
     case NET_EVENT_STATE_PUSH:
         if (app->game_phase != APP_GAME_NO_ROOM) {
             app->game_state = event->state;

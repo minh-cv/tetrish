@@ -17,6 +17,8 @@ typedef enum {
     NET_EVENT_SEND_COMPLETED,
     NET_EVENT_REPLY,
     NET_EVENT_ECHO,
+    //! @brief a response nothing asked for; the connection survives it
+    NET_EVENT_UNSOLICITED_REPLY,
     NET_EVENT_STATE_PUSH,
     NET_EVENT_DISCONNECTED,
     NET_EVENT_ERROR,
