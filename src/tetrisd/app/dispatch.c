@@ -306,8 +306,21 @@ static DispatchResult handle_room_leave(AppData* data, Fd fd, HtttpOutboundMessa
 #define ROOM_LIST_PAGE_SIZE 20
 
 /*!
-    @brief answer `GET_ROOM_LIST /rooms/<page>` with the public rooms among
-           room keys `[page * 20, (page + 1) * 20)` as a JSON array
+    @brief answer `GET_ROOM_LIST /rooms/<page>` with public rooms
+           `[page * 20, (page + 1) * 20)` as a JSON array
+
+    A page counts public rooms, not room keys. Slicing the key space first
+    and filtering after would make most pages empty and some short: keys are
+    handed out from the free list's back, so the first room created is the
+    last key, and a browser asking for the first page would be told there is
+    nothing to join while rooms sat on page 25.
+
+    Rooms are visited in key order rather than through an index of the public
+    ones. An index would make this cheaper, but @c SparseSet reorders its
+    dense array on erase, so page boundaries would shift whenever any room
+    closed — a browser would see one room twice and miss another. Key order
+    is stable, and scanning @c max_rooms keys is not a cost worth trading it
+    for.
 
     Private rooms are left out rather than marked: they are reachable by
     telling someone the room code, not by browsing. An empty page is a
@@ -325,17 +338,23 @@ static DispatchResult handle_get_room_list(AppData* data, const HtttpRequest* pa
         return respond(outbound, HTTTP_STATUS_INTERNAL_SERVER_ERROR, "Out of memory");
     }
 
-    // a page past SIZE_MAX / 20 would overflow the key math, and is far
-    // beyond any real capacity: it is just an empty page
+    // a page past SIZE_MAX / 20 cannot be reached by any count of rooms, so
+    // it is simply empty; saturating keeps the multiply from wrapping
     const size_t first = page_idx > SIZE_MAX / ROOM_LIST_PAGE_SIZE
-        ? data->rooms.capacity
+        ? SIZE_MAX
         : page_idx * ROOM_LIST_PAGE_SIZE;
-    for (size_t key = first; key < first + ROOM_LIST_PAGE_SIZE && key < data->rooms.capacity; key++) {
+
+    size_t ordinal = 0;
+    size_t emitted = 0;
+    for (size_t key = 0; key < data->rooms.capacity && emitted < ROOM_LIST_PAGE_SIZE; key++) {
         if (!SparseSet_Room_contains(&data->rooms, key)) {
             continue;
         }
         const Room* room = SparseSet_Room_get(&data->rooms, key);
         if (!room->config.is_public) {
+            continue;
+        }
+        if (ordinal++ < first) {
             continue;
         }
 
@@ -351,6 +370,7 @@ static DispatchResult handle_get_room_list(AppData* data, const HtttpRequest* pa
             return respond(outbound, HTTTP_STATUS_INTERNAL_SERVER_ERROR, "Out of memory");
         }
         cJSON_AddItemToArray(rooms, entry);
+        emitted++;
     }
 
     char* const body = cJSON_PrintUnformatted(rooms);
