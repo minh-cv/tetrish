@@ -17,6 +17,7 @@ typedef enum {
     GAME_INTENT_ROTATE_CCW,
     GAME_INTENT_DROP_SOFT,
     GAME_INTENT_DROP_HARD,
+    GAME_INTENT_PAUSE,
     GAME_INTENT_HOLD,
     GAME_INTENT_LEAVE,
     /*
@@ -24,7 +25,6 @@ typedef enum {
         inputs by the MOVE_LEFT..HOLD range, and a browse is not one of them.
     */
     GAME_INTENT_ROOM_LIST,
-    GAME_INTENT_PAUSE,
 } GameIntentType;
 
 /*!

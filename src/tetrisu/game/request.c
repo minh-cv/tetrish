@@ -1,5 +1,6 @@
 #include "game/request.h"
 
+#include "game/intent.h"
 #include "proto.h"
 
 #include <stdbool.h>
@@ -159,6 +160,9 @@ int game_request_from_intent(
         break;
     case GAME_INTENT_LEAVE:
         out->method = "LEAVE";
+        break;
+    case GAME_INTENT_PAUSE:
+        out->method = "PAUSE";
         break;
     default:
         memset(out, 0, sizeof(*out));
