@@ -402,7 +402,8 @@ void AppData_room_tick(AppData* data, uint64_t expirations,
         // the first frame is the one carrying the recorded inputs; room_tick
         // clears them, so the catch-up frames advance on none
         for (uint64_t f = 0; f < expirations && room->status == ROOM_IN_GAME; f++) {
-            room_tick(data, room_idx);
+            if (!room->is_paused)
+                room_tick(data, room_idx);
         }
 
         if (room->status == ROOM_IN_GAME) {

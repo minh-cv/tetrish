@@ -96,6 +96,7 @@ typedef struct {
     size_t started_member_count;
     RoomStatus status;
     RoomConfig config;
+    bool is_paused;
 } Room;
 
 #define SPARSE_SET_ELEM_TYPE Player

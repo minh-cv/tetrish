@@ -1,4 +1,5 @@
 #include "app/dispatch.h"
+#include "app/app_layer.h"
 #include "app/room.h"
 #include "app/util.h"
 #include "cJSON.h"
@@ -8,6 +9,7 @@
 #include "tetrisbrain/input.h"
 #include <assert.h>
 #include <stdbool.h>
+#include <stddef.h>
 #include <stdint.h>
 #include <stdlib.h>
 #include <string.h>
@@ -25,6 +27,7 @@ typedef enum {
     METHOD_WHOAMI,
     METHOD_GET_ROOM_LIST,
     METHOD_NOT_ALLOWED,
+    METHOD_PAUSE,
 } Method;
 
 static const char* METHOD_TABLE[] = {
@@ -39,6 +42,7 @@ static const char* METHOD_TABLE[] = {
     [METHOD_SET_PLAYER_NAME] = "SET_PLAYER_NAME",
     [METHOD_WHOAMI] = "WHOAMI",
     [METHOD_GET_ROOM_LIST] = "GET_ROOM_LIST",
+    [METHOD_PAUSE] = "PAUSE",
 };
 
 static Method get_method(const char* method) {
@@ -525,6 +529,23 @@ static DispatchResult handle_input(AppData* data, Fd fd, Method method, const Ht
     return DISPATCH_NO_RESPONSE;
 }
 
+DispatchResult handle_pause(AppData* data, Fd fd, HtttpOutboundMessage* outbound) {
+    Player* player = SparseSet_Player_get(&data->players, (size_t)fd);
+    size_t room_idx = player->room_idx;
+    if (room_idx == ROOM_IDX_NONE) {
+        return respond(outbound, HTTTP_STATUS_CONFLICT, 
+        "Not in a room");
+    }
+    Room* room = SparseSet_Room_get(&data->rooms, room_idx);
+    if (room->status != ROOM_IN_GAME) {
+        return respond(outbound, HTTTP_STATUS_CONFLICT, 
+        "Game not started");
+    }
+    room->is_paused = !room->is_paused;
+    LOGGER_LOG(LOG_INFO, "pause", "room %zu %s", room_idx, room->is_paused ? "paused" : "resumed");
+    return respond(outbound, HTTTP_STATUS_OK, NULL);
+}
+
 DispatchResult respond_one_request(AppData* data, Fd fd, const HtttpRequest* parsed, HtttpOutboundMessage* outbound) {
     outbound->message.is_request = false;
     const Method method = get_method(parsed->method);
@@ -548,6 +569,8 @@ DispatchResult respond_one_request(AppData* data, Fd fd, const HtttpRequest* par
         return handle_whoami(data, fd, outbound);
     case METHOD_GET_ROOM_LIST:
         return handle_get_room_list(data, parsed, outbound);
+    case METHOD_PAUSE:
+        return handle_pause(data, fd, outbound);
     case METHOD_NOT_ALLOWED:
         return handle_method_not_allowed(outbound);
     default:

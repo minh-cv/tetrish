@@ -24,6 +24,7 @@ typedef enum {
         inputs by the MOVE_LEFT..HOLD range, and a browse is not one of them.
     */
     GAME_INTENT_ROOM_LIST,
+    GAME_INTENT_PAUSE,
 } GameIntentType;
 
 /*!

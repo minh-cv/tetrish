@@ -14,6 +14,7 @@ typedef enum {
     COMMAND_GAME,
     COMMAND_SEND_RAW,
     COMMAND_UNSUPPORTED,
+    COMMAND_PAUSE,
 } CommandType;
 
 typedef struct {

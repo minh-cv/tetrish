@@ -198,6 +198,8 @@ CommandRouteResult command_route(const CommandArgv* argv, ParsedCommand* out) {
         if (join_arguments(argv, 1, out) == -1) {
             return COMMAND_ROUTE_NOMEM;
         }
+    } else if (strcmp(name, "pause") == 0) {
+        return route_no_argument(argv, out, GAME_INTENT_PAUSE);
     } else {
         return COMMAND_ROUTE_UNKNOWN;
     }
