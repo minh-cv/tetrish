@@ -9,7 +9,10 @@ static void fill_random_bag(TetrominoType bag[TETROMINO_TYPE_COUNT], Rng* rng);
 StateConfig state_config_default(void) {
     const StateConfig config = {
         .start_level = 0,
-        .frames_per_level_up = 0,
+        // a level every 20 seconds at the 60 Hz the daemon ticks at by
+        // default. Counted in frames because everything else here is, so a
+        // room ticking at another rate levels on that rate's seconds.
+        .frames_per_level_up = 20 * 60,
         .lock_counter_max = 30,
         .lock_movement_counter_max = 15,
     };

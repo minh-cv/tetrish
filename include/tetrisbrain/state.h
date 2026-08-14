@@ -59,11 +59,14 @@ typedef struct LevelState {
     int frames_per_level_up;
 } LevelState;
 
-// Gameplay knobs fixed at init_state time. Every field has a default (see
-// init_state) that reproduces the pre-config behavior exactly.
+// Gameplay knobs fixed at init_state time. The defaults are a playable
+// marathon rather than a reproduction of any earlier behavior: gravity
+// speeds up on a clock, so a game that is not decided eventually decides
+// itself instead of running until someone gets bored.
 typedef struct StateConfig {
     int start_level;               // >= 0; default 0
-    int frames_per_level_up;       // 0 = never level up; default 0
+    // 0 never levels up; default 1200, a level per 20 s at a 60 Hz tick
+    int frames_per_level_up;
     int lock_counter_max;          // frames of lock delay; default 30
     int lock_movement_counter_max; // move/rotate lock resets; default 15
 } StateConfig;
