@@ -307,7 +307,8 @@ static void put_text(int x, int y, const char* text, uint16_t style, uint32_t co
     }
 }
 
-static void put_bytes(int x, int y, int max_y, const OwnedBytes* bytes) {
+//! @brief @return the row after the last one written, so callers can stack
+static int put_bytes(int x, int y, int max_y, const OwnedBytes* bytes) {
     int current_x = x;
     int current_y = y;
     for (size_t i = 0; i < bytes->len && current_y < max_y; ++i) {
@@ -322,6 +323,7 @@ static void put_bytes(int x, int y, int max_y, const OwnedBytes* bytes) {
         const char shown = byte >= 32 && byte < 127 ? (char)byte : '.';
         put_character(current_x++, current_y, shown, TUI_STYLE_NONE, TUI_COLOR_DEFAULT);
     }
+    return current_y + 1;
 }
 
 static uint32_t cell_color(TetrominoCellType cell) {
@@ -545,9 +547,12 @@ static const char* next_step_text(const AppView* view) {
     than depending on the player having read the docs. Rows stop at @p max_y
     so the status and input lines are never overwritten.
 
-    @return the first row below everything drawn, for whatever follows
+    The last response sits between the two lists rather than after them. On a
+    narrow terminal the lists stack, and something has to lose: a reply is
+    what the player just asked for, while the key list is reference for keys
+    that only work on the screen this one is replaced by. So the keys yield.
 */
-static int draw_usage(int x, int y, int max_y, const AppView* view) {
+static void draw_usage(int x, int y, int max_y, const AppView* view) {
     static const char* const COMMANDS[][2] = {
         {"create [seats] [public] [cross]", "open a room; bare create is solo"},
         {"join <room-id>", "enter the room with that code"},
@@ -586,11 +591,17 @@ static int draw_usage(int x, int y, int max_y, const AppView* view) {
         put_text(x + DESCRIPTION_X, line, COMMANDS[i][1], TUI_STYLE_DIM, TUI_COLOR_DEFAULT);
     }
 
-    // in a narrow terminal the keys follow the commands instead of sitting
-    // beside them; below both, they are the first thing to fall off the screen
+    int left_bottom = row + (int)COMMAND_COUNT + 1;
+    if (view->last_message->len != 0 && left_bottom + 2 < max_y) {
+        put_text(x, left_bottom + 1, "last response", TUI_STYLE_BOLD, 0xE0C080u);
+        left_bottom = put_bytes(x, left_bottom + 2, max_y, view->last_message);
+    }
+
+    // in a narrow terminal the keys follow the left column instead of sitting
+    // beside it; below it, they are the first thing to fall off the screen
     const bool side_by_side = tui_width() >= KEYS_X + KEYS_WIDTH;
     const int keys_x = side_by_side ? x + KEYS_X : x;
-    int keys_y = side_by_side ? row : row + (int)COMMAND_COUNT + 2;
+    int keys_y = side_by_side ? row : left_bottom + 1;
 
     put_text(keys_x, keys_y, "in game", TUI_STYLE_BOLD, 0x80C0FFu);
     for (size_t i = 0; i < KEY_COUNT && keys_y + 1 + (int)i < max_y; ++i) {
@@ -598,10 +609,6 @@ static int draw_usage(int x, int y, int max_y, const AppView* view) {
         put_text(keys_x + 2, line, GAME_KEYS[i][0], TUI_STYLE_NONE, TUI_COLOR_DEFAULT);
         put_text(keys_x + KEY_DESCRIPTION_X, line, GAME_KEYS[i][1], TUI_STYLE_DIM, TUI_COLOR_DEFAULT);
     }
-
-    const int commands_bottom = row + (int)COMMAND_COUNT + 1;
-    const int keys_bottom = keys_y + (int)KEY_COUNT + 1;
-    return commands_bottom > keys_bottom ? commands_bottom : keys_bottom;
 }
 
 void terminal_ui_draw(TerminalUi* ui, const AppView* view) {
@@ -640,13 +647,7 @@ void terminal_ui_draw(TerminalUi* ui, const AppView* view) {
         }
     }
     else {
-        const int usage_bottom = draw_usage(0, 3, status_y, view);
-        // where a room listing lands: the usage is fixed text, so the reply
-        // is the only thing on this screen worth reading twice
-        if (view->last_message->len != 0 && usage_bottom + 2 < status_y) {
-            put_text(0, usage_bottom + 1, "last response", TUI_STYLE_BOLD, 0xE0C080u);
-            put_bytes(0, usage_bottom + 2, status_y, view->last_message);
-        }
+        draw_usage(0, 3, status_y, view);
     }
 
     const char* status = ui->status[0] != '\0' ? ui->status : view->notification;
