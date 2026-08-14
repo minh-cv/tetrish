@@ -8,6 +8,7 @@ The reactor accepts these commands in its command editor:
 |---|---|---|
 | `create [seats] [public] [cross]` | `CREATE /`, body `{"max_players":N,...}` when any option is given | response (`201`, or an error status) |
 | `join <room-id>` | `JOIN /room/<id>` | response (`200`, or an error status) |
+| `rooms [page]` | `GET_ROOM_LIST /rooms/<page>`, page defaulting to `0` | response (`200`, or an error status) |
 | `start` | `START /` | response (`200`, or an error status) |
 | `move left`, `move right` | `MOVE /`, body `LEFT` or `RIGHT` | encrypted frame written |
 | `rotate cw`, `rotate ccw` | `ROTATE /`, body `CW` or `CCW` | encrypted frame written |

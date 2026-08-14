@@ -180,6 +180,14 @@ CommandRouteResult command_route(const CommandArgv* argv, ParsedCommand* out) {
         return route_no_argument(argv, out, GAME_INTENT_HOLD);
     } else if (strcmp(name, "leave") == 0) {
         return route_no_argument(argv, out, GAME_INTENT_LEAVE);
+    } else if (strcmp(name, "rooms") == 0) {
+        // the page is optional: browsing usually starts at the first one
+        if (argv->argc == 1) {
+            out->type = COMMAND_GAME;
+            out->game_intent = GAME_INTENT_ROOM_LIST;
+            return COMMAND_ROUTE_OK;
+        }
+        return route_one_argument(argv, out, GAME_INTENT_ROOM_LIST, is_decimal);
     } else if (strcmp(name, "set-name") == 0 || strcmp(name, "whoami") == 0) {
         out->type = COMMAND_UNSUPPORTED;
     } else if (strcmp(name, "htttp") == 0) {

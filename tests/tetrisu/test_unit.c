@@ -53,6 +53,8 @@ static void test_command_parser_and_router(void) {
         {"drop hard", GAME_INTENT_DROP_HARD},
         {"hold", GAME_INTENT_HOLD},
         {"leave", GAME_INTENT_LEAVE},
+        {"rooms", GAME_INTENT_ROOM_LIST},
+        {"rooms 3", GAME_INTENT_ROOM_LIST},
     };
     for (size_t i = 0; i < sizeof(cases) / sizeof(*cases); ++i) {
         ParsedCommand command = parse_and_route(cases[i].line);
@@ -68,6 +70,8 @@ static void test_command_parser_and_router(void) {
     assert(route_result("join abc") == COMMAND_ROUTE_INVALID_ARGUMENT);
     assert(route_result("join 1 2") == COMMAND_ROUTE_TOO_MANY_ARGUMENTS);
     assert(route_result("create nonsense") == COMMAND_ROUTE_INVALID_ARGUMENT);
+    assert(route_result("rooms abc") == COMMAND_ROUTE_INVALID_ARGUMENT);
+    assert(route_result("rooms 1 2") == COMMAND_ROUTE_TOO_MANY_ARGUMENTS);
     assert(route_result("hold now") == COMMAND_ROUTE_TOO_MANY_ARGUMENTS);
     assert(route_result("drop hard now") == COMMAND_ROUTE_TOO_MANY_ARGUMENTS);
 
@@ -132,6 +136,15 @@ static void test_game_request_mapping(void) {
     assert_request_path(
         GAME_INTENT_CREATE, "4 public", "CREATE", "/",
         "{\"max_players\":4,\"public\":true,\"cross_room_garbage\":false}",
+        CLIENT_REQUEST_EXPECT_REPLY
+    );
+    // an omitted page is the first one, not an empty path segment
+    assert_request_path(
+        GAME_INTENT_ROOM_LIST, NULL, "GET_ROOM_LIST", "/rooms/0", NULL,
+        CLIENT_REQUEST_EXPECT_REPLY
+    );
+    assert_request_path(
+        GAME_INTENT_ROOM_LIST, "3", "GET_ROOM_LIST", "/rooms/3", NULL,
         CLIENT_REQUEST_EXPECT_REPLY
     );
     assert_request(GAME_INTENT_START, "START", NULL, CLIENT_REQUEST_EXPECT_REPLY);

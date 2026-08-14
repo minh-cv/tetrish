@@ -91,6 +91,21 @@ int game_request_from_intent(
         }
         break;
     }
+    case GAME_INTENT_ROOM_LIST: {
+        out->method = "GET_ROOM_LIST";
+        // the daemon pages the listing, twenty rooms at a time, and reads the
+        // page from the path the way it reads a room id
+        const int written = snprintf(
+            scratch->path, sizeof(scratch->path), "/rooms/%s",
+            argument == NULL || *argument == '\0' ? "0" : argument
+        );
+        if (written <= 0 || (size_t)written >= sizeof(scratch->path)) {
+            memset(out, 0, sizeof(*out));
+            return -1;
+        }
+        out->path = scratch->path;
+        break;
+    }
     case GAME_INTENT_JOIN: {
         out->method = "JOIN";
         // the room the player named; the daemon reads the id from the path

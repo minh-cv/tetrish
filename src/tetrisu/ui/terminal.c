@@ -544,13 +544,16 @@ static const char* next_step_text(const AppView* view) {
     Drawn wherever the board is not, so the client is self-describing rather
     than depending on the player having read the docs. Rows stop at @p max_y
     so the status and input lines are never overwritten.
+
+    @return the first row below everything drawn, for whatever follows
 */
-static void draw_usage(int x, int y, int max_y, const AppView* view) {
+static int draw_usage(int x, int y, int max_y, const AppView* view) {
     static const char* const COMMANDS[][2] = {
         {"create [seats] [public] [cross]", "open a room; bare create is solo"},
         {"join <room-id>", "enter the room with that code"},
         {"start", "begin the match"},
         {"leave", "leave the room"},
+        {"rooms [page]", "list public rooms, twenty a page"},
         {"reconnect, disconnect", "restart or drop the session"},
         {"help, quit", "these commands; leave tetrisu"},
     };
@@ -595,6 +598,10 @@ static void draw_usage(int x, int y, int max_y, const AppView* view) {
         put_text(keys_x + 2, line, GAME_KEYS[i][0], TUI_STYLE_NONE, TUI_COLOR_DEFAULT);
         put_text(keys_x + KEY_DESCRIPTION_X, line, GAME_KEYS[i][1], TUI_STYLE_DIM, TUI_COLOR_DEFAULT);
     }
+
+    const int commands_bottom = row + (int)COMMAND_COUNT + 1;
+    const int keys_bottom = keys_y + (int)KEY_COUNT + 1;
+    return commands_bottom > keys_bottom ? commands_bottom : keys_bottom;
 }
 
 void terminal_ui_draw(TerminalUi* ui, const AppView* view) {
@@ -633,7 +640,13 @@ void terminal_ui_draw(TerminalUi* ui, const AppView* view) {
         }
     }
     else {
-        draw_usage(0, 3, status_y, view);
+        const int usage_bottom = draw_usage(0, 3, status_y, view);
+        // where a room listing lands: the usage is fixed text, so the reply
+        // is the only thing on this screen worth reading twice
+        if (view->last_message->len != 0 && usage_bottom + 2 < status_y) {
+            put_text(0, usage_bottom + 1, "last response", TUI_STYLE_BOLD, 0xE0C080u);
+            put_bytes(0, usage_bottom + 2, status_y, view->last_message);
+        }
     }
 
     const char* status = ui->status[0] != '\0' ? ui->status : view->notification;

@@ -19,6 +19,11 @@ typedef enum {
     GAME_INTENT_DROP_HARD,
     GAME_INTENT_HOLD,
     GAME_INTENT_LEAVE,
+    /*
+        After LEAVE deliberately: game_intent_is_input bounds the one-way
+        inputs by the MOVE_LEFT..HOLD range, and a browse is not one of them.
+    */
+    GAME_INTENT_ROOM_LIST,
 } GameIntentType;
 
 /*!
