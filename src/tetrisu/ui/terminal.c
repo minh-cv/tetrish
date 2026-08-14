@@ -516,6 +516,87 @@ static const char* game_phase_text(AppGamePhase phase) {
     return "unknown";
 }
 
+/*!
+    @brief what to do next, given where the session actually is
+
+    The command list below is fixed, so this is the only part that answers
+    "and now what", which is the question someone staring at an empty client
+    is usually asking.
+*/
+static const char* next_step_text(const AppView* view) {
+    if (view->connection != APP_CONNECTION_READY) {
+        return "waiting for the server; 'reconnect' to try again";
+    }
+    switch (view->game_phase) {
+    case APP_GAME_NO_ROOM:
+        return "'create' a room, or 'join <code>' one a friend gave you";
+    case APP_GAME_LOBBY:
+        return "'start' when everyone has joined; share the room code above";
+    case APP_GAME_ACTIVE:
+        return "playing";
+    }
+    return "";
+}
+
+/*!
+    @brief the screen outside a game: what can be typed, and what it does
+
+    Drawn wherever the board is not, so the client is self-describing rather
+    than depending on the player having read the docs. Rows stop at @p max_y
+    so the status and input lines are never overwritten.
+*/
+static void draw_usage(int x, int y, int max_y, const AppView* view) {
+    static const char* const COMMANDS[][2] = {
+        {"create [seats] [public] [cross]", "open a room; bare create is solo"},
+        {"join <room-id>", "enter the room with that code"},
+        {"start", "begin the match"},
+        {"leave", "leave the room"},
+        {"reconnect, disconnect", "restart or drop the session"},
+        {"help, quit", "these commands; leave tetrisu"},
+    };
+    static const char* const GAME_KEYS[][2] = {
+        {"left, a", "move left"},
+        {"right, d", "move right"},
+        {"down, s", "soft drop"},
+        {"space", "hard drop"},
+        {"up, x", "rotate cw"},
+        {"z", "rotate ccw"},
+        {"c", "hold"},
+        {": or Esc", "command line"},
+    };
+    static const size_t COMMAND_COUNT = sizeof(COMMANDS) / sizeof(*COMMANDS);
+    static const size_t KEY_COUNT = sizeof(GAME_KEYS) / sizeof(*GAME_KEYS);
+    // clear of the widest command, which is create's, indented by two
+    static const int DESCRIPTION_X = 35;
+    static const int KEY_DESCRIPTION_X = 12;
+    // second column only where the first's descriptions cannot reach it
+    static const int KEYS_X = 70;
+    static const int KEYS_WIDTH = 22;
+
+    put_text(x, y, next_step_text(view), TUI_STYLE_BOLD, 0x80E080u);
+
+    int row = y + 2;
+    put_text(x, row, "commands", TUI_STYLE_BOLD, 0x80C0FFu);
+    for (size_t i = 0; i < COMMAND_COUNT && row + 1 + (int)i < max_y; ++i) {
+        const int line = row + 1 + (int)i;
+        put_text(x + 2, line, COMMANDS[i][0], TUI_STYLE_NONE, TUI_COLOR_DEFAULT);
+        put_text(x + DESCRIPTION_X, line, COMMANDS[i][1], TUI_STYLE_DIM, TUI_COLOR_DEFAULT);
+    }
+
+    // in a narrow terminal the keys follow the commands instead of sitting
+    // beside them; below both, they are the first thing to fall off the screen
+    const bool side_by_side = tui_width() >= KEYS_X + KEYS_WIDTH;
+    const int keys_x = side_by_side ? x + KEYS_X : x;
+    int keys_y = side_by_side ? row : row + (int)COMMAND_COUNT + 2;
+
+    put_text(keys_x, keys_y, "in game", TUI_STYLE_BOLD, 0x80C0FFu);
+    for (size_t i = 0; i < KEY_COUNT && keys_y + 1 + (int)i < max_y; ++i) {
+        const int line = keys_y + 1 + (int)i;
+        put_text(keys_x + 2, line, GAME_KEYS[i][0], TUI_STYLE_NONE, TUI_COLOR_DEFAULT);
+        put_text(keys_x + KEY_DESCRIPTION_X, line, GAME_KEYS[i][1], TUI_STYLE_DIM, TUI_COLOR_DEFAULT);
+    }
+}
+
 void terminal_ui_draw(TerminalUi* ui, const AppView* view) {
     tui_clear();
     put_text(0, 0, "tetrisu - non-blocking client [Ctrl-C quit]", TUI_STYLE_BOLD, 0x70C0FFu);
@@ -544,15 +625,15 @@ void terminal_ui_draw(TerminalUi* ui, const AppView* view) {
     if (view->has_game_state && tui_height() >= 24 && tui_width() >= 40) {
         draw_board(view->game_state, 0, 3);
         draw_game_sidebar(view->game_state, 24, 3);
+        // only beside a board: out of a game the usage owns this space, and
+        // the status line already carries what a response said
+        if (view->last_message->len != 0 && tui_width() > 48) {
+            put_text(48, 3, "Last response body", TUI_STYLE_BOLD, 0xE0C080u);
+            put_bytes(48, 4, status_y, view->last_message);
+        }
     }
     else {
-        put_text(0, 3, "No game state yet", TUI_STYLE_BOLD, 0x80E080u);
-        put_text(0, 5, "create -> start, then use arrows/a/d/s/z/x/space/c", TUI_STYLE_NONE, TUI_COLOR_DEFAULT);
-    }
-
-    if (view->last_message->len != 0 && tui_width() > 48) {
-        put_text(48, 3, "Last response body", TUI_STYLE_BOLD, 0xE0C080u);
-        put_bytes(48, 4, status_y, view->last_message);
+        draw_usage(0, 3, status_y, view);
     }
 
     const char* status = ui->status[0] != '\0' ? ui->status : view->notification;

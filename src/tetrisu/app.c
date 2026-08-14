@@ -209,7 +209,8 @@ static int reduce_command(
     case COMMAND_HELP:
         set_notification(
             app,
-            "create, join, start, move, rotate, drop, hold, leave, reconnect, quit"
+            "create [seats], join <room-id>, start, leave, "
+            "move/rotate/drop/hold, reconnect, quit"
         );
         return 0;
     case COMMAND_QUIT:
