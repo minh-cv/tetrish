@@ -1,16 +1,19 @@
 #include "app/app_layer.h"
 #include "app/dispatch.h"
 #include "app/room.h"
+#include "app/util.h"
 #include "dtor.h"
 #include "htttp.h"
+#include "logger.h"
 #include "proto.h"
 #include "type.h"
 #include <assert.h>
-#include <stdarg.h>
 #include <stdbool.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+#include <time.h>
+#include <unistd.h>
 
 static DTOR_WRAPPER_DEFINE(free)
 static DTOR_WRAPPER_DEFINE(SparseSet_Player_free)
@@ -40,7 +43,8 @@ static void fail_fd(size_t fd, SparseSet_HtttpOutboundMessageQueue* m_response_q
     }
 }
 
-int AppData_init(AppData* data, size_t max_entries, size_t max_rooms) {
+int AppData_init(AppData* data, size_t max_entries, size_t max_rooms,
+                 size_t max_players_per_room) {
     DTOR_DEFINE(errdtor, 10);
     DTOR_DEFINE(dtor, 1);
 
@@ -48,6 +52,21 @@ int AppData_init(AppData* data, size_t max_entries, size_t max_rooms) {
         DTOR_ERR_RETURN(errdtor, dtor, -1);
     }
     DTOR_INSERT(errdtor, SparseSet_Player_free, &data->players);
+
+    data->member_pool = calloc(max_rooms * max_players_per_room, sizeof(RoomMember));
+    if (data->member_pool == NULL) {
+        DTOR_ERR_RETURN(errdtor, dtor, -1);
+    }
+    DTOR_INSERT(errdtor, free, data->member_pool);
+    data->max_players_per_room = max_players_per_room;
+
+    if (SparseSet_bool_init(&data->garbage_pending, max_entries) == -1) {
+        DTOR_ERR_RETURN(errdtor, dtor, -1);
+    }
+    DTOR_INSERT(errdtor, SparseSet_bool_free, &data->garbage_pending);
+    rng_init(&data->garbage_rng, (uint64_t)time(NULL) ^ (uint64_t)getpid());
+    data->garbage_injected = 0;
+    data->garbage_dropped_no_target = 0;
 
     if (SparseSet_Room_init(&data->rooms, max_rooms) == -1) {
         DTOR_ERR_RETURN(errdtor, dtor, -1);
@@ -72,9 +91,11 @@ int AppData_init(AppData* data, size_t max_entries, size_t max_rooms) {
 }
 
 void AppData_free(AppData* data) {
+    SparseSet_bool_free(&data->garbage_pending);
     Vec_RoomIdx_free(&data->free_room_idxs);
     SparseSet_bool_free(&data->in_game_rooms);
     SparseSet_Room_free(&data->rooms);
+    free(data->member_pool);
     SparseSet_Player_free(&data->players);
 }
 
@@ -200,40 +221,35 @@ void AppData_respond(AppData* data, const SparseSet_HtttpParsedMessageQueue* m_p
     }
 }
 
-static char* malloc_sprintf(const char* fmt, ...) {
-    va_list ap;
-    va_start(ap, fmt);
-    va_list ap_copy;
-    va_copy(ap_copy, ap);
-    int count = vsnprintf(NULL, 0, fmt, ap_copy);
-    if (count < 0) {
-        va_end(ap_copy);
-        va_end(ap);
-        return NULL;        
+/*
+    Hide the pieces the room's preview setting does not reveal. The queue
+    runs bag1[bag1_offset] (the piece in play), the rest of bag1, then bag2;
+    the first max_preview entries after the piece in play stay, later ones
+    are overwritten with TETROMINO_TYPE_COUNT, which no real piece uses.
+*/
+static void mask_bag_previews(BagState* bag, int max_preview) {
+    int j = bag->bag1_offset + 1 + max_preview;
+    if (j < 0) {
+        j = 0;
     }
-    va_end(ap_copy);
-    char* buf = malloc((size_t)count + 1);
-    if (buf == NULL) {
-        va_end(ap);
-        return NULL;
+    for (; j < ROOM_PREVIEW_MAX; j++) {
+        TetrominoType* slot = j < TETROMINO_TYPE_COUNT
+            ? &bag->bag1[j]
+            : &bag->bag2[j - TETROMINO_TYPE_COUNT];
+        *slot = TETROMINO_TYPE_COUNT;
     }
-    int result = vsprintf(buf, fmt, ap);
-    va_end(ap);
-    if (result < 0) {
-        free(buf);
-        return NULL;
-    }
-    return buf;
 }
 
 /*!
-    @brief build the @c STATE request carrying @p room 's board into
+    @brief build the @c STATE request carrying @p member 's board into
            @p outbound
 
     The request is addressed to the room it reports on, `/room/<room_idx>`,
     rather than to the member it goes to.
 
-    @pre @p room_idx is the key of @p room in @c rooms
+    @pre @p room_idx is the key of @p member 's room in @c rooms , and
+         @p room_in_game and @p max_preview are that room's status and
+         preview setting
 
     @post on success @p outbound holds a message whose memory is owned by
           the caller
@@ -242,12 +258,13 @@ static char* malloc_sprintf(const char* fmt, ...) {
     @return -1 if the body, the Content-Length header or the path could not
             be allocated, 0 otherwise
 */
-static int make_state_request(const Room* room, size_t room_idx, HtttpOutboundMessage* outbound) {
+static int make_state_request(const RoomMember* member, size_t room_idx, bool room_in_game,
+                              int max_preview, HtttpOutboundMessage* outbound) {
     DTOR_DEFINE(errdtor, 3);
     DTOR_DEFINE(dtor, 1);
 
-    const State* game = &room->game;
-    const ProtoStateRequest state = {
+    const State* game = &member->game;
+    ProtoStateRequest state = {
         .board_state = game->board_state,
         .combo_counter = game->combo_counter,
         .hold_state = game->hold_state,
@@ -255,8 +272,9 @@ static int make_state_request(const Room* room, size_t room_idx, HtttpOutboundMe
         .garbage_balance = game->garbage_balance,
         .back_to_back_count = game->back_to_back_count,
         .game_score = game->score,
-        .is_game_active = room->status == ROOM_IN_GAME,
+        .is_game_active = room_in_game && member->alive,
     };
+    mask_bag_previews(&state.bag_state, max_preview);
 
     unsigned char* body;
     size_t body_len;
@@ -305,38 +323,46 @@ static int make_state_request(const Room* room, size_t room_idx, HtttpOutboundMe
     DTOR_RETURN(dtor, 0);
 }
 
-void AppData_room_tick(AppData* data, uint64_t expirations,
-                       SparseSet_HtttpOutboundMessageQueue* m_response_qs,
-                       SparseSet_bool* err_fds) {
-    if (expirations == 0) {
-        return;
+/*
+    The producer half of an attack: bank each member's accumulated outgoing
+    garbage as one event and zero the balance. The engine accumulates
+    outgoing rows as a negative garbage_balance at lock time; nothing else
+    ever drains the negative side, so this is the only producer. A room
+    whose game ended on this tick's frames emits nothing: its boards are
+    already meaningless.
+*/
+static void resolve_garbage(AppData* data);
+
+static void mark_garbage(AppData* data, const Room* room) {
+    assert(room->status == ROOM_IN_GAME);
+    for (size_t i = 0; i < room->member_count; i++) {
+        const RoomMember* member = &room->members[i];
+        if (!member->alive || member->game.garbage_balance >= 0) {
+            continue;
+        }
+        // the balance stays where it is: the seat owns the amount, and this
+        // only records where to look. resolve_garbage spends it.
+        *SparseSet_bool_activate(&data->garbage_pending, (size_t)member->fd) = true;
     }
+}
 
-    //! TODO: make this configurable instead of hardcoding
-    if (expirations > 5) {
-        expirations = 5;
-    }
-
-    for (size_t i = SparseSet_bool_size(&data->in_game_rooms); i-- > 0;) {
-        const size_t room_idx = SparseSet_bool_key_at_idx(&data->in_game_rooms, i);
-        Room* room = SparseSet_Room_get(&data->rooms, room_idx);
-        assert(room->status == ROOM_IN_GAME && "in_game_rooms holds the rooms in a game");
-
-        const Fd fd_raw = room->member;
+//! @brief push every member of @p room the snapshot of their own board
+static void push_room_snapshots(AppData* data, const Room* room, size_t room_idx,
+                                SparseSet_HtttpOutboundMessageQueue* m_response_qs,
+                                SparseSet_bool* err_fds) {
+    const bool room_in_game = room->status == ROOM_IN_GAME;
+    for (size_t m = 0; m < room->member_count; m++) {
+        const RoomMember* member = &room->members[m];
+        const Fd fd_raw = member->fd;
         assert(fd_raw >= 0 && SparseSet_Player_contains(&data->players, (size_t)fd_raw));
         const size_t fd = (size_t)fd_raw;
         if (SparseSet_bool_contains(err_fds, fd)) {
             continue;
         }
 
-        // the first frame is the one carrying the recorded inputs; room_tick
-        // clears them, so the catch-up frames advance on none
-        for (uint64_t f = 0; f < expirations && room->status == ROOM_IN_GAME; f++) {
-            room_tick(data, room_idx);
-        }
-
         HtttpOutboundMessage push;
-        if (make_state_request(room, room_idx, &push) == -1) {
+        if (make_state_request(member, room_idx, room_in_game,
+                               room->config.max_preview, &push) == -1) {
             fail_fd(fd, m_response_qs, err_fds);
             continue;
         }
@@ -345,5 +371,184 @@ void AppData_room_tick(AppData* data, uint64_t expirations,
         if (HtttpOutboundMessageQueue_push_back(out, &push) == -1) {
             htttp_message_free(&push.message, &push.ownership);
         }
+    }
+}
+
+void AppData_room_tick(AppData* data, uint64_t expirations,
+                       SparseSet_HtttpOutboundMessageQueue* m_response_qs,
+                       SparseSet_bool* err_fds) {
+    if (expirations == 0) {
+        return;
+    }
+    assert(SparseSet_bool_size(&data->garbage_pending) == 0 &&
+           "garbage_pending is scratch, filled and drained inside this call");
+
+    //! TODO: make this configurable instead of hardcoding
+    if (expirations > 5) {
+        expirations = 5;
+    }
+
+    /*
+        Advance every running room. Reverse iteration because a game that
+        ends leaves in_game_rooms mid-loop. A room that ended is snapshotted
+        here rather than below: routing cannot change a board that is already
+        final, and the phase that pushes the rest no longer sees the room.
+    */
+    for (size_t i = SparseSet_bool_size(&data->in_game_rooms); i-- > 0;) {
+        const size_t room_idx = SparseSet_bool_key_at_idx(&data->in_game_rooms, i);
+        Room* room = SparseSet_Room_get(&data->rooms, room_idx);
+        assert(room->status == ROOM_IN_GAME && "in_game_rooms holds the rooms in a game");
+
+        // the first frame is the one carrying the recorded inputs; room_tick
+        // clears them, so the catch-up frames advance on none
+        for (uint64_t f = 0; f < expirations && room->status == ROOM_IN_GAME; f++) {
+            room_tick(data, room_idx);
+        }
+
+        if (room->status == ROOM_IN_GAME) {
+            mark_garbage(data, room);
+        }
+        else {
+            push_room_snapshots(data, room, room_idx, m_response_qs, err_fds);
+        }
+    }
+
+    // every board has taken its frames, so a cross-room target no longer
+    // depends on the order the rooms happened to be visited in
+    resolve_garbage(data);
+
+    for (size_t i = 0; i < SparseSet_bool_size(&data->in_game_rooms); i++) {
+        const size_t room_idx = SparseSet_bool_key_at_idx(&data->in_game_rooms, i);
+        const Room* room = SparseSet_Room_get(&data->rooms, room_idx);
+        push_room_snapshots(data, room, room_idx, m_response_qs, err_fds);
+    }
+}
+
+//! @brief a random living opponent in @p room , or NULL
+static RoomMember* pick_same_room(AppData* data, Room* room, Fd source_fd) {
+    int count = 0;
+    for (size_t i = 0; i < room->member_count; i++) {
+        const RoomMember* member = &room->members[i];
+        if (member->alive && member->fd != source_fd) {
+            count++;
+        }
+    }
+    if (count == 0) {
+        return NULL;
+    }
+
+    int pick = rng_below(&data->garbage_rng, count);
+    for (size_t i = 0; i < room->member_count; i++) {
+        RoomMember* member = &room->members[i];
+        if (member->alive && member->fd != source_fd && pick-- == 0) {
+            return member;
+        }
+    }
+    assert(false && "the counted candidate must be found again");
+    return NULL;
+}
+
+/*!
+    @brief a random living member of a room other than @p source_room_idx
+           that also opted into cross-room garbage, or NULL
+
+    Cross-room garbage only travels between such rooms: an isolated room
+    never receives what it could never send.
+*/
+static RoomMember* pick_cross_room(AppData* data, size_t source_room_idx) {
+    int count = 0;
+    for (size_t r = 0; r < SparseSet_bool_size(&data->in_game_rooms); r++) {
+        const size_t room_idx = SparseSet_bool_key_at_idx(&data->in_game_rooms, r);
+        if (room_idx == source_room_idx) {
+            continue;
+        }
+        const Room* room = SparseSet_Room_get(&data->rooms, room_idx);
+        if (!room->config.cross_room_garbage) {
+            continue;
+        }
+        for (size_t i = 0; i < room->member_count; i++) {
+            if (room->members[i].alive) {
+                count++;
+            }
+        }
+    }
+    if (count == 0) {
+        return NULL;
+    }
+
+    int pick = rng_below(&data->garbage_rng, count);
+    for (size_t r = 0; r < SparseSet_bool_size(&data->in_game_rooms); r++) {
+        const size_t room_idx = SparseSet_bool_key_at_idx(&data->in_game_rooms, r);
+        if (room_idx == source_room_idx) {
+            continue;
+        }
+        Room* room = SparseSet_Room_get(&data->rooms, room_idx);
+        if (!room->config.cross_room_garbage) {
+            continue;
+        }
+        for (size_t i = 0; i < room->member_count; i++) {
+            if (room->members[i].alive && pick-- == 0) {
+                return &room->members[i];
+            }
+        }
+    }
+    assert(false && "the counted candidate must be found again");
+    return NULL;
+}
+
+/*!
+    @brief spend every attack in @c garbage_pending and empty it
+
+    The seat named by each fd still holds the amount as a negative
+    @c garbage_balance ; this is what turns it into rows on somebody else's
+    board. The rows land through the game's own intake, so they surface on
+    the target at its next spawn rather than immediately.
+
+    @post @c garbage_pending is empty, and no seat named by it has a
+          negative balance left
+*/
+static void resolve_garbage(AppData* data) {
+    while (SparseSet_bool_size(&data->garbage_pending) > 0) {
+        const size_t fd = SparseSet_bool_key_at_idx(&data->garbage_pending, 0);
+        SparseSet_bool_erase(&data->garbage_pending, fd);
+
+        // nothing can close a player between the mark and here, so every
+        // lookup below is a live one; they are checked rather than asserted
+        // only because a room can have ended on the frames that banked this.
+        if (!SparseSet_Player_contains(&data->players, fd)) {
+            continue;
+        }
+        const size_t room_idx = SparseSet_Player_get(&data->players, fd)->room_idx;
+        if (room_idx == ROOM_IDX_NONE) {
+            continue;
+        }
+        Room* room = SparseSet_Room_get(&data->rooms, room_idx);
+        if (room->status != ROOM_IN_GAME) {
+            continue;
+        }
+        RoomMember* source = room_find_member(room, (Fd)fd);
+        if (source == NULL || source->game.garbage_balance >= 0) {
+            continue;
+        }
+
+        const int lines = -source->game.garbage_balance;
+        source->game.garbage_balance = 0;
+
+        // no source_fd to exclude across rooms: the sender's own room is
+        // skipped entirely, and a player sits in exactly one room
+        RoomMember* target = room->config.cross_room_garbage
+            ? pick_cross_room(data, room_idx)
+            : pick_same_room(data, room, (Fd)fd);
+        if (target == NULL) {
+            data->garbage_dropped_no_target++;
+            LOGGER_LOG(LOG_INFO, "garbage", "room=%zu fd=%zu sent %d lines, no target",
+                       room_idx, fd, lines);
+            continue;
+        }
+
+        queue_garbage(&target->game, lines);
+        data->garbage_injected++;
+        LOGGER_LOG(LOG_INFO, "garbage", "room=%zu fd=%zu -> fd=%d, %d lines",
+                   room_idx, fd, target->fd, lines);
     }
 }

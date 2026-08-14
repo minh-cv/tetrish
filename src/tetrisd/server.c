@@ -104,7 +104,7 @@ static void logger_tick(Server* server, const EpollSignals* signals) {
 }
 
 int server_init(Server* server) {
-    DTOR_DEFINE(errdtor, 10);
+    DTOR_DEFINE(errdtor, 12);
     DTOR_DEFINE(dtor, 1);
 
     if (config_var_init(&server->cfg) == -1) {
@@ -168,7 +168,8 @@ int server_init(Server* server) {
     }
     DTOR_INSERT(errdtor, HtttpData_free, &server->htttp);
 
-    if (AppData_init(&server->app, server->cfg.max_fds, server->cfg.max_rooms) == -1) {
+    if (AppData_init(&server->app, server->cfg.max_fds, server->cfg.max_rooms,
+                     server->cfg.max_players_per_room) == -1) {
         DTOR_ERR_RETURN(errdtor, dtor, -1);
     }
     DTOR_INSERT(errdtor, AppData_free, &server->app);
@@ -207,6 +208,7 @@ int server_init(Server* server) {
         DTOR_ERR_RETURN(errdtor, dtor, -1);
     }
 
+
     // connect and flush what startup logged, rather than waiting for the first
     // epoll_wait to return, which on an idle server can be a long time
     const EpollSignals quiet = {0};
@@ -218,6 +220,8 @@ int server_init(Server* server) {
 void server_free(Server* server) {
     AppData_free(&server->app);
     RoomTimer_free(&server->room_timer);
+    // after AppData_free (nothing references it), before LoggerData_free so
+    // its close/unlink failures still get logged
     // before Epoll_free (which closes control conn fds this layer references)
     // and before config_var_free (control.ipc_path points into cfg)
     Control_free(&server->control);
@@ -247,11 +251,14 @@ static int render_state_json(const Server* server, char* buf, size_t buf_size, s
     const int written = snprintf(buf, buf_size,
         "{\"pid\":%ld,\"players_connected\":%zu,"
         "\"players_authed\":%zu,\"players_capacity\":%u,"
-        "\"fds_used\":%zu,\"fds_capacity\":%zu,\"listen_port\":%d}",
+        "\"fds_used\":%zu,\"fds_capacity\":%zu,\"listen_port\":%d,"
+        "\"garbage_injected\":%llu,\"garbage_dropped\":%llu}",
         (long)getpid(), SparseSet_PlayerIoEntry_size(&server->player_io.entries),
         players_authed, server->cfg.max_player_fd,
         SparseSet_EpollEntry_size(&server->epoll.entries),
-        server->epoll.entries.capacity, server->cfg.port);
+        server->epoll.entries.capacity, server->cfg.port,
+        (unsigned long long)server->app.garbage_injected,
+        (unsigned long long)server->app.garbage_dropped_no_target);
     if (written < 0 || (size_t)written >= buf_size) {
         return -1;
     }

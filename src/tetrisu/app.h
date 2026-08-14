@@ -59,6 +59,14 @@ typedef struct {
     size_t input_count;
     ProtoStateRequest game_state;
     bool has_game_state;
+    /*!
+        @brief the room the player is in, as the server reported it
+
+        Taken from the body of a successful CREATE or JOIN, since telling
+        somebody else the code is the whole of the lobby flow.
+    */
+    size_t room_id;
+    bool has_room_id;
     OwnedBytes last_message;
     int last_response_status;
     char notification[APP_NOTIFICATION_CAPACITY];
@@ -87,14 +95,22 @@ typedef enum {
     APP_EFFECT_QUIT,
 } AppEffectType;
 
+//! @brief room for `/room/<id>` at any id the wire can carry
+#define APP_EFFECT_PATH_CAPACITY 32u
+
 /*!
-    @invariant string fields borrow literals and outlive the effect list
+    @invariant @c method and @c content_type borrow literals and outlive the
+               effect list
     @invariant @c payload is uniquely owned
+
+    @note @c path is stored inline rather than borrowed: a room id makes it
+          per-request, so there is no literal to point at and the builder's
+          scratch is gone by the time the effect runs.
 */
 typedef struct {
     AppEffectType type;
     const char* method;
-    const char* path;
+    char path[APP_EFFECT_PATH_CAPACITY];
     const char* content_type;
     ClientRequestCompletion completion;
     OwnedBytes payload;
@@ -114,6 +130,8 @@ typedef struct {
     AppGamePhase game_phase;
     const ProtoStateRequest* game_state;
     bool has_game_state;
+    size_t room_id;
+    bool has_room_id;
     const OwnedBytes* last_message;
     int last_response_status;
     size_t queued_inputs;

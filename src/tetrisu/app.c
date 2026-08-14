@@ -36,10 +36,16 @@ static int push_effect(
     AppEffect effect = {
         .type = type,
         .method = method,
-        .path = path,
         .content_type = content_type,
         .completion = completion,
     };
+    if (path != NULL) {
+        const size_t length = strlen(path);
+        if (length >= sizeof(effect.path)) {
+            return -1;
+        }
+        memcpy(effect.path, path, length + 1);
+    }
     owned_bytes_init(&effect.payload);
     if (owned_bytes_copy(&effect.payload, payload, payload_len) == -1) {
         return -1;
@@ -102,10 +108,12 @@ static AppPendingOperation pending_for_intent(GameIntentType intent) {
 static int emit_request(
     AppState* app,
     GameIntentType intent,
+    const char* argument,
     AppEffectList* effects
 ) {
     ClientRequest request;
-    if (game_request_from_intent(intent, &request) == -1) {
+    GameRequestScratch scratch;
+    if (game_request_from_intent(intent, argument, &scratch, &request) == -1) {
         return -1;
     }
     if (push_effect(
@@ -139,8 +147,9 @@ static int schedule_next_input(AppState* app, AppEffectList* effects) {
         app->request != APP_REQUEST_IDLE || app->input_count == 0) {
         return 0;
     }
+    // queued intents are gameplay inputs, which never carry an argument
     const GameIntentType intent = app->input_queue[app->input_head];
-    if (emit_request(app, intent, effects) == -1) {
+    if (emit_request(app, intent, NULL, effects) == -1) {
         return -1;
     }
     app->input_head = (app->input_head + 1) % APP_GAME_INPUT_QUEUE_CAPACITY;
@@ -151,6 +160,7 @@ static int schedule_next_input(AppState* app, AppEffectList* effects) {
 static int reduce_game_command(
     AppState* app,
     GameIntentType intent,
+    const char* argument,
     AppEffectList* effects
 ) {
     if (app->connection != APP_CONNECTION_READY) {
@@ -187,7 +197,7 @@ static int reduce_game_command(
         set_notification(app, "Not in a room");
         return 0;
     }
-    return emit_request(app, intent, effects);
+    return emit_request(app, intent, argument, effects);
 }
 
 static int reduce_command(
@@ -229,7 +239,7 @@ static int reduce_command(
             CLIENT_REQUEST_EXPECT_REPLY, NULL, 0
         );
     case COMMAND_GAME:
-        return reduce_game_command(app, command->game_intent, effects);
+        return reduce_game_command(app, command->game_intent, command->argument, effects);
     case COMMAND_SEND_RAW:
         if (app->connection != APP_CONNECTION_READY) {
             set_notification(app, "Not connected");
@@ -257,6 +267,31 @@ static int reduce_command(
     return -1;
 }
 
+/*!
+    @brief read the room id CREATE and JOIN answer with
+
+    The body is the id in decimal and nothing else. A body that is not that
+    leaves the id unset rather than guessing: the phase transition does not
+    depend on it, so an unreadable code costs the player the shortcut of
+    being told their room, not the room.
+*/
+static void capture_room_id(AppState* app, const OwnedBytes* body) {
+    app->has_room_id = false;
+    if (body->ptr == NULL || body->len == 0 || body->len > 20) {
+        return;
+    }
+    size_t value = 0;
+    for (size_t i = 0; i < body->len; ++i) {
+        const unsigned char digit = body->ptr[i];
+        if (digit < '0' || digit > '9') {
+            return;
+        }
+        value = value * 10 + (size_t)(digit - '0');
+    }
+    app->room_id = value;
+    app->has_room_id = true;
+}
+
 static void apply_response(AppState* app, int status) {
     const bool success = status >= 200 && status < 300;
     if (success) {
@@ -265,6 +300,7 @@ static void apply_response(AppState* app, int status) {
         case APP_PENDING_JOIN:
             app->game_phase = APP_GAME_LOBBY;
             app->has_game_state = false;
+            capture_room_id(app, &app->last_message);
             break;
         case APP_PENDING_START:
             app->game_phase = APP_GAME_ACTIVE;
@@ -272,6 +308,7 @@ static void apply_response(AppState* app, int status) {
         case APP_PENDING_LEAVE:
             app->game_phase = APP_GAME_NO_ROOM;
             app->has_game_state = false;
+            app->has_room_id = false;
             clear_input_queue(app);
             break;
         case APP_PENDING_NONE:
@@ -280,7 +317,15 @@ static void apply_response(AppState* app, int status) {
     }
 
     char text[APP_NOTIFICATION_CAPACITY];
-    (void)snprintf(text, sizeof(text), "Server response: %d", status);
+    if (success && app->has_room_id &&
+        (app->pending_operation == APP_PENDING_CREATE ||
+         app->pending_operation == APP_PENDING_JOIN)) {
+        (void)snprintf(text, sizeof(text), "In room %zu; share that code to be joined",
+                       app->room_id);
+    }
+    else {
+        (void)snprintf(text, sizeof(text), "Server response: %d", status);
+    }
     set_notification(app, text);
 }
 
@@ -405,6 +450,8 @@ void app_build_view(const AppState* app, AppView* view) {
         .game_phase = app->game_phase,
         .game_state = &app->game_state,
         .has_game_state = app->has_game_state,
+        .room_id = app->room_id,
+        .has_room_id = app->has_room_id,
         .last_message = &app->last_message,
         .last_response_status = app->last_response_status,
         .queued_inputs = app->input_count,

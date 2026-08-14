@@ -520,15 +520,22 @@ void terminal_ui_draw(TerminalUi* ui, const AppView* view) {
     tui_clear();
     put_text(0, 0, "tetrisu - non-blocking client [Ctrl-C quit]", TUI_STYLE_BOLD, 0x70C0FFu);
 
-    char state_line[128];
+    char state_line[160];
+    char room[32] = "";
+    if (view->has_room_id) {
+        // the code a friend needs, kept on screen rather than only announced
+        // once in the notification line that the next event overwrites
+        (void)snprintf(room, sizeof(room), "    room: %zu", view->room_id);
+    }
     (void)snprintf(
         state_line,
         sizeof(state_line),
-        "connection: %s    request: %s    game: %s    queued: %zu",
+        "connection: %s    request: %s    game: %s    queued: %zu%s",
         connection_text(view->connection),
         request_text(view->request),
         game_phase_text(view->game_phase),
-        view->queued_inputs
+        view->queued_inputs,
+        room
     );
     put_text(0, 1, state_line, TUI_STYLE_NONE, TUI_COLOR_DEFAULT);
 

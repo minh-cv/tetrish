@@ -188,16 +188,18 @@ int proto_parse_state_request(const unsigned char* body, size_t body_len, ProtoS
     out.hold_state.hold_type = (TetrominoType)hold_type;
     out.hold_state.hold_status = (HoldStatus)hold_status;
 
+    // + 1: TETROMINO_TYPE_COUNT is the "hidden by the room's preview cap"
+    // sentinel, valid on the wire (see the header)
     for (int i = 0; i < TETROMINO_TYPE_COUNT; i++) {
         int bag;
-        if (get_enum(body, &off, TETROMINO_TYPE_COUNT, &bag) == -1) {
+        if (get_enum(body, &off, TETROMINO_TYPE_COUNT + 1, &bag) == -1) {
             return -1;
         }
         out.bag_state.bag1[i] = (TetrominoType)bag;
     }
     for (int i = 0; i < TETROMINO_TYPE_COUNT; i++) {
         int bag;
-        if (get_enum(body, &off, TETROMINO_TYPE_COUNT, &bag) == -1) {
+        if (get_enum(body, &off, TETROMINO_TYPE_COUNT + 1, &bag) == -1) {
             return -1;
         }
         out.bag_state.bag2[i] = (TetrominoType)bag;
@@ -247,11 +249,13 @@ void proto_encode_state_request(const ProtoStateRequest* state, unsigned char bo
     put_enum(body, &off, (int)state->hold_state.hold_type, TETROMINO_TYPE_COUNT);
     put_enum(body, &off, (int)state->hold_state.hold_status, HOLD_STATUS_COUNT);
 
+    // + 1: a bag byte of TETROMINO_TYPE_COUNT is the "hidden by the room's
+    // preview cap" sentinel, not a piece (see the header)
     for (int i = 0; i < TETROMINO_TYPE_COUNT; i++) {
-        put_enum(body, &off, (int)state->bag_state.bag1[i], TETROMINO_TYPE_COUNT);
+        put_enum(body, &off, (int)state->bag_state.bag1[i], TETROMINO_TYPE_COUNT + 1);
     }
     for (int i = 0; i < TETROMINO_TYPE_COUNT; i++) {
-        put_enum(body, &off, (int)state->bag_state.bag2[i], TETROMINO_TYPE_COUNT);
+        put_enum(body, &off, (int)state->bag_state.bag2[i], TETROMINO_TYPE_COUNT + 1);
     }
     put_enum(body, &off, state->bag_state.bag1_offset, TETROMINO_TYPE_COUNT);
 

@@ -1,5 +1,6 @@
 #include "command/router.h"
 
+#include <stdbool.h>
 #include <stdlib.h>
 #include <stdint.h>
 #include <string.h>
@@ -73,6 +74,72 @@ static CommandRouteResult route_choice(
     return COMMAND_ROUTE_INVALID_ARGUMENT;
 }
 
+static bool is_decimal(const char* text) {
+    if (*text == '\0') {
+        return false;
+    }
+    for (; *text != '\0'; ++text) {
+        if (*text < '0' || *text > '9') {
+            return false;
+        }
+    }
+    return true;
+}
+
+/*!
+    @brief route a command taking exactly one argument, kept verbatim
+
+    The argument reaches the request builder as text; only its shape is
+    checked here, so a malformed room id is refused without spending a
+    round trip on it.
+*/
+static CommandRouteResult route_one_argument(
+    const CommandArgv* argv,
+    ParsedCommand* out,
+    GameIntentType intent,
+    bool (*is_valid)(const char*)
+) {
+    if (argv->argc < 2) {
+        return COMMAND_ROUTE_MISSING_ARGUMENT;
+    }
+    if (argv->argc > 2) {
+        return COMMAND_ROUTE_TOO_MANY_ARGUMENTS;
+    }
+    if (!is_valid(argv->argv[1])) {
+        return COMMAND_ROUTE_INVALID_ARGUMENT;
+    }
+    out->type = COMMAND_GAME;
+    out->game_intent = intent;
+    if (join_arguments(argv, 1, out) == -1) {
+        return COMMAND_ROUTE_NOMEM;
+    }
+    return COMMAND_ROUTE_OK;
+}
+
+/*!
+    @brief route `create` and its room options
+
+    Options are matched by shape rather than by a flag grammar, which suits
+    a command line typed during play: a number is the seat count, and each
+    remaining word names a flag. A bare @c create keeps its argument NULL so
+    the request carries no body and the server's own defaults apply.
+*/
+static CommandRouteResult route_create(const CommandArgv* argv, ParsedCommand* out) {
+    for (size_t i = 1; i < argv->argc; ++i) {
+        const char* option = argv->argv[i];
+        if (!is_decimal(option) &&
+            strcmp(option, "public") != 0 && strcmp(option, "cross") != 0) {
+            return COMMAND_ROUTE_INVALID_ARGUMENT;
+        }
+    }
+    out->type = COMMAND_GAME;
+    out->game_intent = GAME_INTENT_CREATE;
+    if (argv->argc > 1 && join_arguments(argv, 1, out) == -1) {
+        return COMMAND_ROUTE_NOMEM;
+    }
+    return COMMAND_ROUTE_OK;
+}
+
 CommandRouteResult command_route(const CommandArgv* argv, ParsedCommand* out) {
     memset(out, 0, sizeof(*out));
     if (argv == NULL || argv->argc == 0) {
@@ -89,9 +156,9 @@ CommandRouteResult command_route(const CommandArgv* argv, ParsedCommand* out) {
     } else if (strcmp(name, "disconnect") == 0) {
         out->type = COMMAND_DISCONNECT;
     } else if (strcmp(name, "create") == 0) {
-        return route_no_argument(argv, out, GAME_INTENT_CREATE);
+        return route_create(argv, out);
     } else if (strcmp(name, "join") == 0) {
-        return route_no_argument(argv, out, GAME_INTENT_JOIN);
+        return route_one_argument(argv, out, GAME_INTENT_JOIN, is_decimal);
     } else if (strcmp(name, "start") == 0) {
         return route_no_argument(argv, out, GAME_INTENT_START);
     } else if (strcmp(name, "move") == 0) {

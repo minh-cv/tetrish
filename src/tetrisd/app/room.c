@@ -7,7 +7,40 @@
 #include <stdbool.h>
 #include <string.h>
 
-int room_create(AppData* data, Fd fd, size_t* out_room_idx) {
+RoomConfig room_config_default(void) {
+    const RoomConfig config = {
+        .is_public = false,
+        .max_players = 1,
+        .cross_room_garbage = false,
+        .shared_seed = true,
+        .max_preview = ROOM_PREVIEW_MAX,
+        .brain = state_config_default(),
+    };
+    return config;
+}
+
+/*
+    The win rule. A game of two or more ends with a last player standing;
+    a solo game only ends by topping out, so today's singleplayer flow is
+    untouched by the versus rule.
+*/
+static bool room_is_game_over(const Room* room) {
+    if (room->alive_count == 0) {
+        return true;
+    }
+    return room->started_member_count >= 2 && room->alive_count <= 1;
+}
+
+RoomMember* room_find_member(Room* room, Fd fd) {
+    for (size_t i = 0; i < room->member_count; i++) {
+        if (room->members[i].fd == fd) {
+            return &room->members[i];
+        }
+    }
+    return NULL;
+}
+
+int room_create(AppData* data, Fd fd, const RoomConfig* config, size_t* out_room_idx) {
     assert(fd >= 0 && SparseSet_Player_contains(&data->players, (size_t)fd));
 
     Player* player = SparseSet_Player_get(&data->players, (size_t)fd);
@@ -21,7 +54,13 @@ int room_create(AppData* data, Fd fd, size_t* out_room_idx) {
     const size_t room_idx = *Vec_RoomIdx_back(&data->free_room_idxs);
     Room room;
     memset(&room, 0, sizeof(room));
-    room.member = fd;
+    room.config = config == NULL ? room_config_default() : *config;
+    assert(room.config.max_players >= 1 &&
+           room.config.max_players <= data->max_players_per_room);
+    room.members = &data->member_pool[room_idx * data->max_players_per_room];
+    memset(room.members, 0, data->max_players_per_room * sizeof(RoomMember));
+    room.members[0].fd = fd;
+    room.member_count = 1;
     room.status = ROOM_LOBBY;
 
     const int err = SparseSet_Room_insert(&data->rooms, room_idx, &room);
@@ -37,28 +76,82 @@ int room_create(AppData* data, Fd fd, size_t* out_room_idx) {
     return 0;
 }
 
+RoomJoinResult room_join(AppData* data, Fd fd, size_t room_idx) {
+    assert(fd >= 0 && SparseSet_Player_contains(&data->players, (size_t)fd));
+
+    Player* player = SparseSet_Player_get(&data->players, (size_t)fd);
+    if (player->room_idx != ROOM_IDX_NONE) {
+        return ROOM_JOIN_ALREADY_IN_ROOM;
+    }
+    // bounds before contains: the key comes off the wire, and contains
+    // asserts on out-of-range keys
+    if (room_idx >= data->rooms.capacity ||
+        !SparseSet_Room_contains(&data->rooms, room_idx)) {
+        return ROOM_JOIN_NO_SUCH_ROOM;
+    }
+
+    Room* room = SparseSet_Room_get(&data->rooms, room_idx);
+    if (room->status == ROOM_IN_GAME) {
+        return ROOM_JOIN_IN_GAME;
+    }
+    if (room->member_count >= room->config.max_players) {
+        return ROOM_JOIN_FULL;
+    }
+
+    RoomMember* seat = &room->members[room->member_count];
+    memset(seat, 0, sizeof(*seat));
+    seat->fd = fd;
+    room->member_count++;
+    player->room_idx = room_idx;
+    LOGGER_LOG(LOG_INFO, "room", "room=%zu joined by fd=%d, %zu members",
+               room_idx, fd, room->member_count);
+    return ROOM_JOIN_OK;
+}
+
 int room_start(AppData* data, size_t room_idx) {
     assert(SparseSet_Room_contains(&data->rooms, room_idx));
 
     Room* room = SparseSet_Room_get(&data->rooms, room_idx);
-    // the seed fixes the entire piece sequence and every garbage hole column,
-    // and shared_seed hands the same one to both players, so it has to be
-    // unguessable: anything derived from the clock is brute-forceable from the
-    // server time alone. Nothing here falls back to a weaker source, and the
-    // seed is deliberately never logged.
-    uint64_t seed;
-    if (RAND_bytes((unsigned char*)&seed, sizeof(seed)) != 1) {
+    /*
+        A seed fixes the entire piece sequence and every garbage hole column,
+        so it has to be unguessable: anything derived from the clock is
+        brute-forceable from the server time alone. Nothing here falls back to
+        a weaker source, and no seed is ever logged.
+
+        shared_seed hands one draw to every member, the fairness rule in versus
+        play. Members that draw their own sequences each get their own draw
+        rather than a mix of the room's: a player can read their own sequence
+        off their board, and deriving the others from it would hand them
+        everyone else's queue.
+    */
+    uint64_t shared_seed = 0;
+    if (room->config.shared_seed &&
+        RAND_bytes((unsigned char*)&shared_seed, sizeof(shared_seed)) != 1) {
         LOGGER_LOG(LOG_ERROR, "room", "room=%zu cannot start: no secure seed available", room_idx);
         return -1;
     }
-    room->game = init_state(seed);
-    const bool is_topped_out = apply_spawn(&room->game);
-    assert(!is_topped_out && "an empty board cannot block the first piece");
-    (void)is_topped_out;
-    memset(room->inputs, 0, sizeof(room->inputs));
+
+    for (size_t i = 0; i < room->member_count; i++) {
+        RoomMember* member = &room->members[i];
+        uint64_t seed = shared_seed;
+        if (!room->config.shared_seed &&
+            RAND_bytes((unsigned char*)&seed, sizeof(seed)) != 1) {
+            LOGGER_LOG(LOG_ERROR, "room", "room=%zu cannot start: no secure seed available", room_idx);
+            return -1;
+        }
+        member->game = init_state(seed, &room->config.brain);
+        const bool is_topped_out = apply_spawn(&member->game);
+        assert(!is_topped_out && "an empty board cannot block the first piece");
+        (void)is_topped_out;
+        memset(member->inputs, 0, sizeof(member->inputs));
+        member->alive = true;
+    }
+    room->alive_count = room->member_count;
+    room->started_member_count = room->member_count;
     room->status = ROOM_IN_GAME;
     *SparseSet_bool_activate(&data->in_game_rooms, room_idx) = true;
-    LOGGER_LOG(LOG_INFO, "room", "room=%zu game started for fd=%d", room_idx, room->member);
+    LOGGER_LOG(LOG_INFO, "room", "room=%zu game started with %zu members",
+               room_idx, room->member_count);
     return 0;
 }
 
@@ -68,10 +161,24 @@ void room_tick(AppData* data, size_t room_idx) {
     Room* room = SparseSet_Room_get(&data->rooms, room_idx);
     assert(room->status == ROOM_IN_GAME);
 
-    const bool (*inputs)[PLAYER_INPUT_KEY_COUNT] = (const bool (*)[PLAYER_INPUT_KEY_COUNT])&room->inputs;
-    const bool is_topped_out = apply_player_inputs(&room->game, inputs);
-    memset(room->inputs, 0, sizeof(room->inputs));
-    if (is_topped_out) {
+    for (size_t i = 0; i < room->member_count; i++) {
+        RoomMember* member = &room->members[i];
+        if (!member->alive) {
+            continue;
+        }
+
+        const bool (*inputs)[PLAYER_INPUT_KEY_COUNT] = (const bool (*)[PLAYER_INPUT_KEY_COUNT])&member->inputs;
+        const bool is_topped_out = apply_player_inputs(&member->game, inputs);
+        memset(member->inputs, 0, sizeof(member->inputs));
+        if (is_topped_out) {
+            member->alive = false;
+            room->alive_count--;
+            LOGGER_LOG(LOG_INFO, "room", "room=%zu fd=%d topped out, score=%d",
+                       room_idx, member->fd, member->game.score);
+        }
+    }
+
+    if (room_is_game_over(room)) {
         room_end(data, room_idx);
     }
 }
@@ -84,8 +191,26 @@ void room_end(AppData* data, size_t room_idx) {
     if (SparseSet_bool_contains(&data->in_game_rooms, room_idx)) {
         SparseSet_bool_erase(&data->in_game_rooms, room_idx);
     }
-    LOGGER_LOG(LOG_INFO, "room", "room=%zu game over for fd=%d, score=%d",
-               room_idx, room->member, room->game.score);
+
+    // a solo game has survival as its goal, not outliving anyone, so its
+    // last player standing is not a winner
+    const RoomMember* winner = NULL;
+    if (room->started_member_count >= 2) {
+        for (size_t i = 0; i < room->member_count; i++) {
+            if (room->members[i].alive) {
+                winner = &room->members[i];
+                break;
+            }
+        }
+    }
+    if (winner != NULL) {
+        LOGGER_LOG(LOG_INFO, "room", "room=%zu game over, fd=%d wins, score=%d",
+                   room_idx, winner->fd, winner->game.score);
+    }
+    else {
+        LOGGER_LOG(LOG_INFO, "room", "room=%zu game over with %zu members",
+                   room_idx, room->member_count);
+    }
 }
 
 void room_leave(AppData* data, Fd fd) {
@@ -100,17 +225,35 @@ void room_leave(AppData* data, Fd fd) {
     player->room_idx = ROOM_IDX_NONE;
 
     assert(SparseSet_Room_contains(&data->rooms, room_idx));
-    assert(SparseSet_Room_get(&data->rooms, room_idx)->member == fd);
+    Room* room = SparseSet_Room_get(&data->rooms, room_idx);
+    RoomMember* member = room_find_member(room, fd);
+    assert(member != NULL && "a player's room_idx names a room seating them");
 
-    if (SparseSet_bool_contains(&data->in_game_rooms, room_idx)) {
-        SparseSet_bool_erase(&data->in_game_rooms, room_idx);
+    if (room->status == ROOM_IN_GAME && member->alive) {
+        room->alive_count--;
     }
 
-    LOGGER_LOG(LOG_INFO, "room", "room=%zu closed, fd=%d left", room_idx, fd);
-    memset(SparseSet_Room_get(&data->rooms, room_idx), 0, sizeof(Room));
-    SparseSet_Room_erase(&data->rooms, room_idx);
+    *member = room->members[room->member_count - 1];
+    room->member_count--;
+    memset(&room->members[room->member_count], 0, sizeof(RoomMember));
 
-    const int err = Vec_RoomIdx_push_back(&data->free_room_idxs, &room_idx);
-    assert(err != -1 && "free list holds one entry per room key");
-    (void)err;
+    if (room->member_count == 0) {
+        if (SparseSet_bool_contains(&data->in_game_rooms, room_idx)) {
+            SparseSet_bool_erase(&data->in_game_rooms, room_idx);
+        }
+        LOGGER_LOG(LOG_INFO, "room", "room=%zu closed, fd=%d left", room_idx, fd);
+        memset(room, 0, sizeof(Room));
+        SparseSet_Room_erase(&data->rooms, room_idx);
+
+        const int err = Vec_RoomIdx_push_back(&data->free_room_idxs, &room_idx);
+        assert(err != -1 && "free list holds one entry per room key");
+        (void)err;
+        return;
+    }
+
+    LOGGER_LOG(LOG_INFO, "room", "room=%zu fd=%d left, %zu members remain",
+               room_idx, fd, room->member_count);
+    if (room->status == ROOM_IN_GAME && room_is_game_over(room)) {
+        room_end(data, room_idx);
+    }
 }

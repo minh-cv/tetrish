@@ -52,6 +52,22 @@ typedef struct GravityState {
     int gravity_frame_counter_max;
 } GravityState;
 
+typedef struct LevelState {
+    int level;
+    int frame_counter;
+    // Frames between automatic level-ups; 0 or less means never level up.
+    int frames_per_level_up;
+} LevelState;
+
+// Gameplay knobs fixed at init_state time. Every field has a default (see
+// init_state) that reproduces the pre-config behavior exactly.
+typedef struct StateConfig {
+    int start_level;               // >= 0; default 0
+    int frames_per_level_up;       // 0 = never level up; default 0
+    int lock_counter_max;          // frames of lock delay; default 30
+    int lock_movement_counter_max; // move/rotate lock resets; default 15
+} StateConfig;
+
 typedef struct HoldState {
     TetrominoType hold_type;
     HoldStatus hold_status;
@@ -69,9 +85,10 @@ typedef struct MovementState {
 } MovementState;
 
 typedef struct State {
-    BoardState board_state; 
+    BoardState board_state;
     LockState lock_state;
     GravityState gravity_state;
+    LevelState level_state;
     int combo_counter;
     HoldState hold_state;
     BagState bag_state;
@@ -89,7 +106,11 @@ typedef enum TSpinType {
     T_SPIN_MINI,
 } TSpinType;
 
-State init_state(uint64_t seed);
+StateConfig state_config_default(void);
+// NULL config means state_config_default().
+State init_state(uint64_t seed, const StateConfig* config);
+// Set gravity speed from a level; the level 0 result matches init_state.
+void update_level_gravity(GravityState* gs, int level);
 TetrominoType next_bag(BagState* s, Rng* rng);
 void spawn(Tetromino* t, TetrominoType type);
 bool is_colliding(const Tetromino* t, const Board* board);
