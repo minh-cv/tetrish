@@ -26,8 +26,8 @@ typedef enum {
     METHOD_SET_PLAYER_NAME,
     METHOD_WHOAMI,
     METHOD_GET_ROOM_LIST,
-    METHOD_NOT_ALLOWED,
     METHOD_PAUSE,
+    METHOD_NOT_ALLOWED,
 } Method;
 
 static const char* METHOD_TABLE[] = {

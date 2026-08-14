@@ -1,5 +1,6 @@
 #include "app.h"
 
+#include "game/intent.h"
 #include "game/request.h"
 
 #include <stdio.h>

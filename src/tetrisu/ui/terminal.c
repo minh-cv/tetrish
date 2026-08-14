@@ -190,9 +190,6 @@ static bool append_game_key(const TuiInputEvent* event, UiCommandList* commands)
     else if (event->ch == 'c') {
         append_game_intent(commands, GAME_INTENT_HOLD);
     }
-    else if (event->ch == 'p') {
-        append_game_intent(commands, GAME_INTENT_PAUSE);
-    }
     else {
         return false;
     }
