@@ -270,17 +270,35 @@ void terminal_ui_update(
     }
 }
 
-static void put_character(int x, int y, char ch, uint16_t style, uint32_t color) {
+/*!
+    @brief write one cell as a whole glyph, which may be multi-byte UTF-8
+
+    The board paints with backgrounds rather than letters, and its ghost is
+    U+2591, so a cell is a string here rather than the single @c char the
+    text helpers pass down.
+*/
+static void put_glyph(
+    int x, int y, const char* glyph, uint16_t style, uint32_t fg, uint32_t bg
+) {
     if (x < 0 || y < 0 || x >= tui_width() || y >= tui_height()) {
         return;
     }
     TuiCell* cell = &tui_get_buffer()[(size_t)y * (size_t)tui_width() + (size_t)x];
     memset(cell->ch, 0, sizeof(cell->ch));
-    cell->ch[0] = ch;
+    const size_t length = strlen(glyph);
+    const size_t copied = length < sizeof(cell->ch) ? length : sizeof(cell->ch) - 1;
+    memcpy(cell->ch, glyph, copied);
+    // one column wide whatever the encoding: every glyph drawn here is either
+    // ASCII or a block element, and the board's geometry depends on it
     cell->width = 1;
-    cell->fg = color;
-    cell->bg = TUI_COLOR_DEFAULT;
+    cell->fg = fg;
+    cell->bg = bg;
     cell->style = style;
+}
+
+static void put_character(int x, int y, char ch, uint16_t style, uint32_t color) {
+    const char glyph[2] = {ch, '\0'};
+    put_glyph(x, y, glyph, style, color, TUI_COLOR_DEFAULT);
 }
 
 static void put_text(int x, int y, const char* text, uint16_t style, uint32_t color) {
@@ -323,11 +341,6 @@ static uint32_t cell_color(TetrominoCellType cell) {
         : TUI_COLOR_DEFAULT;
 }
 
-static char tetromino_letter(TetrominoType type) {
-    static const char letters[TETROMINO_TYPE_COUNT] = {'I', 'J', 'L', 'O', 'S', 'T', 'Z'};
-    return type >= 0 && type < TETROMINO_TYPE_COUNT ? letters[type] : '?';
-}
-
 static bool piece_occupies(
     const Tetromino* piece,
     int board_row,
@@ -342,9 +355,21 @@ static bool piece_occupies(
         );
 }
 
-static void put_block(int x, int y, char ch, uint32_t color, bool dim) {
-    put_character(x, y, '[', dim ? TUI_STYLE_DIM : TUI_STYLE_BOLD, color);
-    put_character(x + 1, y, ch, dim ? TUI_STYLE_DIM : TUI_STYLE_BOLD, color);
+//! @brief U+2591 LIGHT SHADE, the ghost's texture
+#define GHOST_GLYPH "\xe2\x96\x91"
+
+//! @brief the well's floor, dark enough that a piece colour reads against it
+#define BOARD_EMPTY_BG 0x1C1C1Cu
+
+/*!
+    @brief paint one board cell, which is two columns wide
+
+    Two columns because a terminal cell is about twice as tall as it is wide,
+    so a one-column square reads as a rectangle and the well looks squashed.
+*/
+static void put_block(int x, int y, const char* glyph, uint32_t fg, uint32_t bg) {
+    put_glyph(x, y, glyph, TUI_STYLE_NONE, fg, bg);
+    put_glyph(x + 1, y, glyph, TUI_STYLE_NONE, fg, bg);
 }
 
 static void draw_board(const ProtoStateRequest* state, int x, int y) {
@@ -361,28 +386,65 @@ static void draw_board(const ProtoStateRequest* state, int x, int y) {
             const bool active = piece_occupies(&board->tetromino, row, col);
             const bool ghost_cell = !active && locked == TETROMINO_CELL_EMPTY &&
                 piece_occupies(&ghost, row, col);
+            const int cell_x = x + 1 + col * 2;
+
+            // a filled cell is its colour, not a letter on its colour: the
+            // shape is what the player reads, and glyphs break up the mass
             if (active) {
-                put_block(
-                    x + 1 + col * 2, y + visible_row,
-                    tetromino_letter(board->tetromino.type),
-                    cell_color((TetrominoCellType)board->tetromino.type), false
-                );
+                put_block(cell_x, y + visible_row, " ", TUI_COLOR_DEFAULT,
+                          cell_color((TetrominoCellType)board->tetromino.type));
             }
             else if (locked != TETROMINO_CELL_EMPTY) {
-                put_block(
-                    x + 1 + col * 2, y + visible_row,
-                    locked == TETROMINO_CELL_GARBAGE ? '#' : tetromino_letter((TetrominoType)locked),
-                    cell_color(locked), false
-                );
+                put_block(cell_x, y + visible_row, " ", TUI_COLOR_DEFAULT, cell_color(locked));
             }
             else if (ghost_cell) {
-                put_block(x + 1 + col * 2, y + visible_row, '.', 0x707070u, true);
+                // textured in the piece's own colour, so where it will land is
+                // obvious without competing with the piece itself
+                put_block(cell_x, y + visible_row, GHOST_GLYPH,
+                          cell_color((TetrominoCellType)board->tetromino.type), BOARD_EMPTY_BG);
             }
             else {
-                put_block(x + 1 + col * 2, y + visible_row, ' ', 0x303030u, true);
+                put_block(cell_x, y + visible_row, " ", TUI_COLOR_DEFAULT, BOARD_EMPTY_BG);
             }
         }
         put_character(x + 21, y + visible_row, '|', TUI_STYLE_DIM, 0x707070u);
+    }
+}
+
+/*!
+    @brief draw @p type 's spawn shape with its top-left at (@p x , @p y )
+
+    Rows above the piece are skipped rather than reserved, so an I piece
+    (whose occupied row sits inside a 4x4 box) lines up with an S piece
+    (3x3) instead of floating a row lower. The caller can therefore budget
+    the same height for every preview slot.
+
+    A type outside the tetromino range is the preview-cap sentinel and draws
+    nothing, which is how a hidden next piece renders as an empty slot.
+*/
+static void draw_mini_piece(TetrominoType type, int x, int y) {
+    if (type < 0 || type >= TETROMINO_TYPE_COUNT) {
+        return;
+    }
+    const int box = TETROMINO_BOX_SIZE[type];
+
+    int first_row = box;
+    for (int i = 0; i < box && first_row == box; ++i) {
+        for (int j = 0; j < box; ++j) {
+            if (IS_TETROMINO_CELL_OCCUPIED[type](type, TETROMINO_DIRECTION_0, i, j)) {
+                first_row = i;
+                break;
+            }
+        }
+    }
+
+    for (int i = first_row; i < box; ++i) {
+        for (int j = 0; j < box; ++j) {
+            if (IS_TETROMINO_CELL_OCCUPIED[type](type, TETROMINO_DIRECTION_0, i, j)) {
+                put_block(x + j * 2, y + (i - first_row), " ", TUI_COLOR_DEFAULT,
+                          cell_color((TetrominoCellType)type));
+            }
+        }
     }
 }
 
@@ -404,17 +466,25 @@ static void draw_game_sidebar(const ProtoStateRequest* state, int x, int y) {
     (void)snprintf(line, sizeof(line), "garbage: %d", state->garbage_balance);
     put_text(x, y + 3, line, TUI_STYLE_NONE, TUI_COLOR_DEFAULT);
 
+    // three rows per slot: every spawn orientation is one or two rows tall
+    // once draw_mini_piece trims the empty ones, leaving a blank separator
+    static const int SLOT_HEIGHT = 3;
+    static const int PREVIEW_COUNT = 5;
+
     put_text(x, y + 5, "hold:", TUI_STYLE_BOLD, 0x80C0FFu);
-    if (state->hold_state.hold_status != HOLD_EMPTY) {
-        char hold[2] = {tetromino_letter(state->hold_state.hold_type), '\0'};
-        put_text(x + 6, y + 5, hold, TUI_STYLE_BOLD,
-                 cell_color((TetrominoCellType)state->hold_state.hold_type));
+    if (state->hold_state.hold_status == HOLD_EMPTY) {
+        put_text(x + 2, y + 6, "--", TUI_STYLE_DIM, 0x606060u);
     }
-    put_text(x, y + 7, "next:", TUI_STYLE_BOLD, 0x80C0FFu);
-    for (int i = 0; i < 5; ++i) {
-        char item[2] = {tetromino_letter(next_piece(&state->bag_state, i + 1)), '\0'};
-        put_text(x + 2, y + 8 + i, item, TUI_STYLE_BOLD,
-                 cell_color((TetrominoCellType)next_piece(&state->bag_state, i + 1)));
+    else {
+        draw_mini_piece(state->hold_state.hold_type, x + 2, y + 6);
+    }
+
+    const int next_y = y + 6 + SLOT_HEIGHT;
+    put_text(x, next_y, "next:", TUI_STYLE_BOLD, 0x80C0FFu);
+    for (int i = 0; i < PREVIEW_COUNT; ++i) {
+        draw_mini_piece(
+            next_piece(&state->bag_state, i + 1), x + 2, next_y + 1 + i * SLOT_HEIGHT
+        );
     }
 }
 
